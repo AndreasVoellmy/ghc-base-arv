@@ -52,16 +52,16 @@ module GHC.Event.Manager
 
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Exception (finally)
-import Control.Monad ((=<<), forM_, liftM, sequence_, when)
+import Control.Monad ((=<<), forM_, liftM, sequence_, when, sequence)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (mappend, mconcat, mempty)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
-import GHC.List (filter)
+import GHC.List (filter, replicate)
 import GHC.Num (Num(..))
-import GHC.Real ((/), fromIntegral )
+import GHC.Real ((/), fromIntegral, mod )
 import GHC.Show (Show(..))
 import GHC.Event.Clock (getCurrentTime)
 import GHC.Event.Control
@@ -69,6 +69,9 @@ import GHC.Event.Internal (Backend, Event, evtClose, evtRead, evtWrite,
                            Timeout(..))
 import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import System.Posix.Types (Fd)
+
+import GHC.Arr --Data.Array.IArray
+
 
 import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
@@ -150,7 +153,7 @@ type TimeoutEdit = TimeoutQueue -> TimeoutQueue
 -- | The event manager state.
 data EventManager = EventManager
     { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(MVar (IM.IntMap [FdData]))
+    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
     , emTimeouts     :: {-# UNPACK #-} !(IORef TimeoutEdit)
     , emState        :: {-# UNPACK #-} !(IORef State)
     , emUniqueSource :: {-# UNPACK #-} !UniqueSource
@@ -159,6 +162,13 @@ data EventManager = EventManager
 
 ------------------------------------------------------------------------
 -- Creation
+
+arraySize :: Int
+arraySize = 32 --8
+
+hashFd :: Fd -> Int
+hashFd fd = fromIntegral fd `mod` arraySize
+{-# INLINE hashFd #-}
 
 handleControlEvent :: EventManager -> FdKey -> Event -> IO ()
 handleControlEvent mgr reg _evt = do
@@ -185,7 +195,8 @@ new = newWith =<< newDefaultBackend
 
 newWith :: Backend -> IO EventManager
 newWith be = do
-  iofds <- newMVar IM.empty
+  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
+  let !iofds = listArray (0, arraySize - 1) fdVars
   timeouts <- newIORef id
   ctrl <- newControl
   state <- newIORef Created
@@ -278,7 +289,7 @@ registerFd_ :: EventManager -> IOCallback -> Fd -> Event
             -> IO (FdKey, Bool)
 registerFd_ EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
-  modifyMVar emFds $ \oldMap -> do
+  modifyMVar (emFds ! (hashFd fd)) $ \oldMap -> do
     let fd'  = fromIntegral fd
         reg  = FdKey fd u
         !fdd = FdData reg evs cb
@@ -320,7 +331,7 @@ pairEvents prev m fd = let l = eventsOf prev
 -- manager ought to be woken.
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
-  modifyMVar emFds $ \oldMap -> do
+  modifyMVar (emFds ! (hashFd fd)) $ \oldMap -> do
     let dropReg cbs = case filter ((/= u) . keyUnique . fdKey) cbs of
                           []   -> Nothing
                           cbs' -> Just cbs'
@@ -342,7 +353,7 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
 closeFd mgr close fd = do
-  fds <- modifyMVar (emFds mgr) $ \oldMap -> do
+  fds <- modifyMVar (emFds mgr ! hashFd fd) $ \oldMap -> do
     close fd
     case IM.delete (fromIntegral fd) oldMap of
       (Nothing,  _)       -> return (oldMap, [])
@@ -400,7 +411,7 @@ updateTimeout mgr (TK key) us = do
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr fd evs = do
-  fds <- readMVar (emFds mgr)
+  fds <- readMVar (emFds mgr ! hashFd fd)
   case IM.lookup (fromIntegral fd) fds of
       Just cbs -> forM_ cbs $ \(FdData reg ev cb) ->
                     when (evs `I.eventIs` ev) $ cb reg evs
