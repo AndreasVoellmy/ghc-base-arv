@@ -59,7 +59,7 @@ import GHC.Show (Show(..))
 import GHC.Event.Control
 import GHC.Event.Internal (Event, evtClose, evtRead, evtWrite)
 import System.Posix.Types (Fd)
-import GHC.Conc (numCapabilities)
+import GHC.Conc (numCapabilities, yield)
 --import GHC.Arr
 import GHC.IOArray
 import GHC.Real ((/), fromIntegral, mod )
@@ -115,14 +115,14 @@ hashFd fd = (fromIntegral fd `div` 2) -- `mod` arraySize
 -}
 
 {- for n -}
-numEventManagers :: Int
-numEventManagers = 2 -- numCapabilities
+--numEventManagers :: Int
+--numEventManagers = 2 -- numCapabilities
 
 arraySize :: Int
-arraySize = 2048 --1024 -- 128 --32 --8
+arraySize = 4096 --1024 -- 128 --32 --8
 
 hashFd :: Fd -> Int
-hashFd fd = (fromIntegral fd `div` numEventManagers) -- `mod` arraySize
+hashFd fd = (fromIntegral fd) -- `div` numEventManagers) -- `mod` arraySize
 {-# INLINE hashFd #-}
 
 
@@ -209,11 +209,25 @@ loop mgr@EventManager{..} = do
 
 step :: EventManager -> IO Bool
 step mgr@EventManager{..} = do
-  E.pollForever emBackend (onFdEvent mgr)
+  b <- E.pollNonBlock emBackend (onFdEvent mgr)
+  when (not b) $ do
+    E.pollForever emBackend (onFdEvent mgr)
   state <- readIORef emState
   state `seq` return (state == Running)
 
-
+-- nonBlockLoop 1
+{-
+  where nonBlockLoop n = 
+          if n<0
+          then E.pollForever emBackend (onFdEvent mgr)
+          else do b <- E.pollNonBlock emBackend (onFdEvent mgr)
+                  if b
+                    then return ()
+                    else do yield --ButLast
+                            nonBlockLoop (n-1)
+-}
+{-
+-}
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
 

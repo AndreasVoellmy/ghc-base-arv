@@ -29,6 +29,7 @@ module GHC.Event.EPoll
     , oneShotRead
     , poll
     , pollForever
+    , pollNonBlock
     ) where
 
 import qualified GHC.Event.Internal as E
@@ -172,11 +173,30 @@ pollForever ep f = do
   -- we just return (and try again later.)
   n <- A.unsafeLoad events $ \es cap ->
        epollWait (epollFd ep) es cap (-1)
-
   when (n > 0) $ do
     A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
     cap <- A.capacity events
     when (cap == n) $ A.ensureCapacity events (2 * cap)
+
+
+-- | Select a set of file descriptors which are ready for I/O
+-- operations and call @f@ for all ready file descriptors, passing the
+-- events that are ready.
+pollNonBlock :: EPoll                     -- ^ state
+               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
+               -> IO Bool
+pollNonBlock ep f = do
+  let events = epollEvents ep
+  -- Will return zero if the system call was interupted, in which case
+  -- we just return (and try again later.)
+  n <- A.unsafeLoad events $ \es cap ->
+       epollWaitUnsafe (epollFd ep) es cap 0
+  if n > 0 
+    then do A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
+            cap <- A.capacity events
+            when (cap == n) $ A.ensureCapacity events (2 * cap)
+            return True
+    else return False
 
 
 newtype EPollFd = EPollFd {
@@ -253,6 +273,13 @@ epollWait (EPollFd epfd) events numEvents timeout =
     E.throwErrnoIfMinus1NoRetry "epollWait" $
     c_epoll_wait epfd events (fromIntegral numEvents) (fromIntegral timeout)
 
+epollWaitUnsafe :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
+epollWaitUnsafe (EPollFd epfd) events numEvents timeout =
+    fmap fromIntegral .
+    E.throwErrnoIfMinus1NoRetry "epollWait" $
+    c_epoll_wait_unsafe epfd events (fromIntegral numEvents) (fromIntegral timeout)
+
+
 fromEvent :: E.Event -> EventType
 fromEvent e = remap E.evtRead  epollIn .|.
               remap E.evtWrite epollOut
@@ -279,6 +306,10 @@ foreign import ccall unsafe "sys/epoll.h epoll_ctl"
 
 foreign import ccall safe "sys/epoll.h epoll_wait"
     c_epoll_wait :: CInt -> Ptr Event -> CInt -> CInt -> IO CInt
+
+foreign import ccall unsafe "sys/epoll.h epoll_wait"
+    c_epoll_wait_unsafe :: CInt -> Ptr Event -> CInt -> CInt -> IO CInt
+
 
 #endif /* defined(HAVE_EPOLL) */
 
