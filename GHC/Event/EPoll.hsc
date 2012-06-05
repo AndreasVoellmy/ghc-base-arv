@@ -165,7 +165,7 @@ poll ep timeout f = do
 -- events that are ready.
 pollForever :: EPoll                     -- ^ state
                -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-               -> IO ()
+               -> IO Int
 pollForever ep f = do
   let events = epollEvents ep
 
@@ -177,14 +177,14 @@ pollForever ep f = do
     A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
     cap <- A.capacity events
     when (cap == n) $ A.ensureCapacity events (2 * cap)
-
+  return n
 
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
 -- events that are ready.
 pollNonBlock :: EPoll                     -- ^ state
                -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-               -> IO Bool
+               -> IO Int
 pollNonBlock ep f = do
   let events = epollEvents ep
   -- Will return zero if the system call was interupted, in which case
@@ -195,9 +195,8 @@ pollNonBlock ep f = do
     then do A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
             cap <- A.capacity events
             when (cap == n) $ A.ensureCapacity events (2 * cap)
-            return True
-    else return False
-
+    else return ()
+  return n
 
 newtype EPollFd = EPollFd {
       fromEPollFd :: CInt

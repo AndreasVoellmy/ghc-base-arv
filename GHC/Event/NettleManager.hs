@@ -205,17 +205,28 @@ loop mgr@EventManager{..} = do
                       show state
  where
   go = do running <- step mgr
-          when running go
+          when running (yield >> go)
 
 step :: EventManager -> IO Bool
 step mgr@EventManager{..} = do
+  nonBlockLoop 1
+  state <- readIORef emState
+  state `seq` return (state == Running)
+  where nonBlockLoop !n = 
+          if n<0
+          then do n <- E.pollForever emBackend (onFdEvent mgr)
+                  return ()
+          else do n <- E.pollNonBlock emBackend (onFdEvent mgr)
+                  if n>0
+                    then return ()
+                    else yield >> nonBlockLoop (n-1)
+
+{-
   b <- E.pollNonBlock emBackend (onFdEvent mgr)
   when (not b) $ do
     E.pollForever emBackend (onFdEvent mgr)
-  state <- readIORef emState
-  state `seq` return (state == Running)
-
--- nonBlockLoop 1
+-}
+-- 
 {-
   where nonBlockLoop n = 
           if n<0
