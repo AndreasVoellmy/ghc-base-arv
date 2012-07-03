@@ -70,7 +70,7 @@ import GHC.Event.Internal (Backend, Event, evtClose, evtRead, evtWrite,
 import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import System.Posix.Types (Fd)
 
-import GHC.Arr --Data.Array.IArray
+import GHC.Arr 
 
 
 import qualified GHC.Event.IntMap as IM
@@ -164,7 +164,7 @@ data EventManager = EventManager
 -- Creation
 
 arraySize :: Int
-arraySize = 32 --8
+arraySize = 512
 
 hashFd :: Fd -> Int
 hashFd fd = fromIntegral fd `mod` arraySize
