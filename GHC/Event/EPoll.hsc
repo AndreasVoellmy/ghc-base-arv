@@ -61,7 +61,7 @@ oneShotRead _ _ = error "EPoll back end not implemented for this platform"
 poll :: EPoll                     -- ^ state
      -> Timeout                   -- ^ timeout in milliseconds
      -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-     -> IO ()
+     -> IO Int
 poll _ _ _ = error "EPoll back end not implemented for this platform"
 #else
 
@@ -102,7 +102,7 @@ new :: IO E.Backend
 new = do
   epfd <- epollCreate
   evts <- A.new 64
-  let !be = E.backend poll modifyFd delete (EPoll epfd evts)
+  let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete (EPoll epfd evts)
   return be
 
 newEPoll :: IO EPoll
@@ -125,6 +125,22 @@ modifyFd ep fd oevt nevt = with (Event (fromEvent nevt) fd) $
            | nevt == mempty = controlOpDelete
            | otherwise      = controlOpModify
 
+
+modifyFdOnce :: EPoll -> Fd -> E.Event -> IO ()
+modifyFdOnce ep fd evt = 
+  do let !ev = fromEvent evt .|. epollOneShot
+     res <- with (Event oneShotIn fd) $
+            epollControl_ (epollFd ep) controlOpModify fd
+     if res == 0
+       then return ()
+       else do err <- getErrno
+               if err == eNOENT
+                 then with (Event oneShotIn fd) $
+                      epollControl (epollFd ep) controlOpAdd fd
+                 else throwErrno "oneShotRead"
+  
+  --oneShotRead ep fd
+
 oneShotRead :: EPoll -> Fd -> IO ()
 oneShotRead ep fd = 
   do res <- with (Event oneShotIn fd) $
@@ -146,7 +162,7 @@ oneShotIn = epollIn .|. epollOneShot
 poll :: EPoll                     -- ^ state
      -> Timeout                   -- ^ timeout in milliseconds
      -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-     -> IO ()
+     -> IO Int
 poll ep timeout f = do
   let events = epollEvents ep
 
@@ -159,7 +175,8 @@ poll ep timeout f = do
     A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
     cap <- A.capacity events
     when (cap == n) $ A.ensureCapacity events (2 * cap)
-
+  return n
+  
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
 -- events that are ready.

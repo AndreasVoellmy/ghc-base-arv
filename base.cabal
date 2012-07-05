@@ -231,6 +231,8 @@ Library {
     if !os(windows) {
         exposed-modules:
             GHC.Event
+            GHC.Event.NewThread
+        other-modules:
             GHC.Event.Array
             GHC.Event.Clock
             GHC.Event.Control
@@ -239,7 +241,7 @@ Library {
             GHC.Event.Internal
             GHC.Event.KQueue
             GHC.Event.Manager
-            GHC.Event.NettleManager
+            GHC.Event.SequentialManager
             GHC.Event.PSQ
             GHC.Event.Poll
             GHC.Event.Thread

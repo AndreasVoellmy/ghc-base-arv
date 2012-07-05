@@ -8,7 +8,9 @@ module GHC.Event.Internal
     , backend
     , delete
     , poll
+    , pollNonBlock
     , modifyFd
+    , modifyFdOnce
     -- * Event type
     , Event
     , evtRead
@@ -92,7 +94,13 @@ data Backend = forall a. Backend {
     , _bePoll :: a                          -- backend state
               -> Timeout                    -- timeout in milliseconds
               -> (Fd -> Event -> IO ())     -- I/O callback
-              -> IO ()
+              -> IO Int
+
+    -- | Poll backend for new events.  The provided callback is called
+    -- once per file descriptor with new events.
+    , _bePollNonBlock :: a                          -- backend state
+                         -> (Fd -> Event -> IO ())     -- I/O callback
+                         -> IO Int
 
     -- | Register, modify, or unregister interest in the given events
     -- on the given file descriptor.
@@ -101,28 +109,43 @@ data Backend = forall a. Backend {
                   -> Event    -- old events to watch for ('mempty' for new)
                   -> Event    -- new events to watch for ('mempty' to delete)
                   -> IO ()
+                  
+    , _beModifyFdOnce :: a
+                         -> Fd       -- file descriptor
+                         -> Event    -- new events to watch for ('mempty' to delete)
+                         -> IO ()
 
     , _beDelete :: a -> IO ()
     }
 
-backend :: (a -> Timeout -> (Fd -> Event -> IO ()) -> IO ())
+backend :: (a -> Timeout -> (Fd -> Event -> IO ()) -> IO Int)
+        -> (a -> (Fd -> Event -> IO ()) -> IO Int)
         -> (a -> Fd -> Event -> Event -> IO ())
+        -> (a -> Fd -> Event -> IO ())
         -> (a -> IO ())
         -> a
         -> Backend
-backend bPoll bModifyFd bDelete state = Backend state bPoll bModifyFd bDelete
+backend bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete state = Backend state bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete
 {-# INLINE backend #-}
 
-poll :: Backend -> Timeout -> (Fd -> Event -> IO ()) -> IO ()
-poll (Backend bState bPoll _ _) = bPoll bState
+poll :: Backend -> Timeout -> (Fd -> Event -> IO ()) -> IO Int
+poll (Backend bState bPoll _ _ _ _) = bPoll bState
 {-# INLINE poll #-}
 
+pollNonBlock :: Backend -> (Fd -> Event -> IO ()) -> IO Int
+pollNonBlock (Backend bState bPoll bPollNonBlock _ _ _) = bPollNonBlock bState
+{-# INLINE pollNonBlock #-}
+
 modifyFd :: Backend -> Fd -> Event -> Event -> IO ()
-modifyFd (Backend bState _ bModifyFd _) = bModifyFd bState
+modifyFd (Backend bState _ _ bModifyFd _ _) = bModifyFd bState
 {-# INLINE modifyFd #-}
 
+modifyFdOnce :: Backend -> Fd -> Event -> IO ()
+modifyFdOnce (Backend bState _ _ _ bModifyFdOnce _) = bModifyFdOnce bState
+{-# INLINE modifyFdOnce #-}
+
 delete :: Backend -> IO ()
-delete (Backend bState _ _ bDelete) = bDelete bState
+delete (Backend bState _ _ _ _ bDelete) = bDelete bState
 {-# INLINE delete #-}
 
 -- | Throw an 'IOError' corresponding to the current value of
