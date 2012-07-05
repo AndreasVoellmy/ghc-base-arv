@@ -26,9 +26,7 @@ module GHC.Event.EPoll
     , newEPoll
     , modifyFd
     , delete
-    , oneShotRead
     , poll
-    , pollForever
     , pollNonBlock
     ) where
 
@@ -54,9 +52,6 @@ delete _ = error "EPoll back end not implemented for this platform"
 
 modifyFd :: EPoll -> Fd -> E.Event -> E.Event -> IO ()
 modifyFd _ _ _ _ = error "EPoll back end not implemented for this platform"
-
-oneShotRead :: EPoll -> Fd -> IO ()
-oneShotRead _ _ = error "EPoll back end not implemented for this platform"
 
 poll :: EPoll                     -- ^ state
      -> Timeout                   -- ^ timeout in milliseconds
@@ -129,32 +124,16 @@ modifyFd ep fd oevt nevt = with (Event (fromEvent nevt) fd) $
 modifyFdOnce :: EPoll -> Fd -> E.Event -> IO ()
 modifyFdOnce ep fd evt = 
   do let !ev = fromEvent evt .|. epollOneShot
-     res <- with (Event oneShotIn fd) $
+     res <- with (Event ev fd) $
             epollControl_ (epollFd ep) controlOpModify fd
      if res == 0
        then return ()
        else do err <- getErrno
                if err == eNOENT
-                 then with (Event oneShotIn fd) $
+                 then with (Event ev fd) $
                       epollControl (epollFd ep) controlOpAdd fd
-                 else throwErrno "oneShotRead"
+                 else throwErrno "modifyFdOnce"
   
-  --oneShotRead ep fd
-
-oneShotRead :: EPoll -> Fd -> IO ()
-oneShotRead ep fd = 
-  do res <- with (Event oneShotIn fd) $
-            epollControl_ (epollFd ep) controlOpModify fd
-     if res == 0
-       then return ()
-       else do err <- getErrno
-               if err == eNOENT
-                 then with (Event oneShotIn fd) $
-                      epollControl (epollFd ep) controlOpAdd fd
-                 else throwErrno "oneShotRead"
-
-oneShotIn :: EventType
-oneShotIn = epollIn .|. epollOneShot
 
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
@@ -177,24 +156,6 @@ poll ep timeout f = do
     when (cap == n) $ A.ensureCapacity events (2 * cap)
   return n
   
--- | Select a set of file descriptors which are ready for I/O
--- operations and call @f@ for all ready file descriptors, passing the
--- events that are ready.
-pollForever :: EPoll                     -- ^ state
-               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-               -> IO Int
-pollForever ep f = do
-  let events = epollEvents ep
-
-  -- Will return zero if the system call was interupted, in which case
-  -- we just return (and try again later.)
-  n <- A.unsafeLoad events $ \es cap ->
-       epollWait (epollFd ep) es cap (-1)
-  when (n > 0) $ do
-    A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
-    cap <- A.capacity events
-    when (cap == n) $ A.ensureCapacity events (2 * cap)
-  return n
 
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
