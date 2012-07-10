@@ -35,7 +35,6 @@ import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
 
-
 shutdownManagers :: IO ()
 shutdownManagers = 
   do sequence_ [do mmgr <- readIOArray eventManagerRef i 
@@ -49,15 +48,9 @@ shutdownManagers =
        Nothing -> return ()
        Just tmgr -> NE.shutdown tmgr
 
-getSystemEventManager :: IO (Maybe SM.EventManager)
-getSystemEventManager =
-  do t <- myThreadId
-     (cap, _) <- threadCapability t
-     m <- readIOArray eventManagerRef cap
-     case m of 
-       Nothing -> return Nothing
-       Just (_,x) -> return (Just x)
-                         
+getSystemEventManager :: IO SM.EventManager
+getSystemEventManager = getSystemEventManager'
+
 getSystemEventManager' :: IO SM.EventManager
 getSystemEventManager' = 
   do t <- myThreadId
@@ -72,21 +65,18 @@ eventManagerRef :: IOArray Int (Maybe (ThreadId,SM.EventManager))
 eventManagerRef = unsafePerformIO $ do
   mgrs <- newIOArray (0, numCapabilities) Nothing
   sharedCAF mgrs getOrSetSystemEventThreadIOManagerArray
-  return mgrs
 {-# NOINLINE eventManagerRef #-}  
 
 eventManagerLock :: MVar ()
 eventManagerLock = unsafePerformIO $ do
   em <- newMVar ()
   sharedCAF em getOrSetSystemEventThreadEventManagerLock
-  return em
 {-# NOINLINE eventManagerLock #-}  
 
 timerManagerRef :: IORef (Maybe NE.EventManager)
 timerManagerRef = unsafePerformIO $ do
   em <- newIORef Nothing
   sharedCAF em getOrSetSystemEventThreadEventManagerStore
-  return em
 {-# NOINLINE timerManagerRef #-}  
 
 {-# NOINLINE timerManagerThreadRef #-}
@@ -94,7 +84,6 @@ timerManagerThreadRef :: MVar (Maybe ThreadId)
 timerManagerThreadRef = unsafePerformIO $ do
    m <- newMVar Nothing
    sharedCAF m getOrSetSystemEventThreadIOManagerThreadStore
-   return m
 
 ensureTimerManagerIsRunning :: IO ()  
 ensureTimerManagerIsRunning 

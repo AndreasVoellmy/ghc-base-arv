@@ -5,6 +5,7 @@
 
 module GHC.Event.NewThread ( 
   ensureIOManagerIsRunning
+  , getSystemEventManager
   , shutdownManagers
   , threadWaitRead
   , threadWaitWrite
@@ -49,7 +50,10 @@ shutdownManagers =
        Just tmgr -> NE.shutdown tmgr
 
 getSystemEventManager :: IO SM.EventManager
-getSystemEventManager = 
+getSystemEventManager = getSystemEventManager'
+
+getSystemEventManager' :: IO SM.EventManager
+getSystemEventManager' = 
   do t <- myThreadId
      (cap, _) <- threadCapability t
      Just (_,mgr) <- readIOArray eventManagerRef cap     
@@ -62,21 +66,18 @@ eventManagerRef :: IOArray Int (Maybe (ThreadId,SM.EventManager))
 eventManagerRef = unsafePerformIO $ do
   mgrs <- newIOArray (0, numCapabilities) Nothing
   sharedCAF mgrs getOrSetSystemEventThreadIOManagerArray
-  return mgrs
 {-# NOINLINE eventManagerRef #-}  
 
 eventManagerLock :: MVar ()
 eventManagerLock = unsafePerformIO $ do
   em <- newMVar ()
   sharedCAF em getOrSetSystemEventThreadEventManagerLock
-  return em
 {-# NOINLINE eventManagerLock #-}  
 
 timerManagerRef :: IORef (Maybe NE.EventManager)
 timerManagerRef = unsafePerformIO $ do
   em <- newIORef Nothing
   sharedCAF em getOrSetSystemEventThreadEventManagerStore
-  return em
 {-# NOINLINE timerManagerRef #-}  
 
 {-# NOINLINE timerManagerThreadRef #-}
@@ -84,7 +85,6 @@ timerManagerThreadRef :: MVar (Maybe ThreadId)
 timerManagerThreadRef = unsafePerformIO $ do
    m <- newMVar Nothing
    sharedCAF m getOrSetSystemEventThreadIOManagerThreadStore
-   return m
 
 ensureTimerManagerIsRunning :: IO ()  
 ensureTimerManagerIsRunning 
@@ -142,7 +142,7 @@ ensureIOManagerIsRunning
 threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
-  !mgr <- getSystemEventManager 
+  !mgr <- getSystemEventManager' 
   SM.registerFd_ mgr (putMVar m) fd evt
   evt' <- takeMVar m 
   if evt' `E.eventIs` E.evtClose
@@ -161,7 +161,7 @@ closeFdWith :: (Fd -> IO ())        -- ^ Action that performs the close.
             -> Fd                   -- ^ File descriptor to close.
             -> IO ()
 closeFdWith close fd = do
-  !mgr <- getSystemEventManager
+  !mgr <- getSystemEventManager'
   SM.closeFd mgr close fd
 
 threadDelay :: Int -> IO ()
