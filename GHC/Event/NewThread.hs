@@ -193,19 +193,4 @@ foreign import ccall unsafe "getOrSetSystemEventThreadEventManagerLock"
 foreign import ccall unsafe "getOrSetSystemEventThreadIOManagerArray"
     getOrSetSystemEventThreadIOManagerArray :: Ptr a -> IO (Ptr a)
 
-{-
-
-eventManager0 :: IORef (Maybe SM.EventManager)
-eventManager0 = unsafePerformIO $ do
-    em <- newIORef Nothing
-    sharedCAF em getOrSetSystemEventThreadEventManagerStore
-{-# NOINLINE eventManager0 #-}
-
-{-# NOINLINE ioManager0 #-}
-ioManager0 :: MVar (Maybe ThreadId)
-ioManager0 = unsafePerformIO $ do
-   m <- newMVar Nothing
-   sharedCAF m getOrSetSystemEventThreadIOManagerThreadStore
--}
-
 foreign import ccall unsafe "rtsSupportsBoundThreads" threaded :: Bool
