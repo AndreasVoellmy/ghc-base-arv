@@ -176,7 +176,7 @@ loop mgr@EventManager{..} = do
     Created -> go `finally` cleanup mgr
     Dying   -> cleanup mgr
     _       -> do cleanup mgr
-                  error $ "GHC.Event.Manager.loop: state is already " ++
+                  error $ "GHC.Event.SequentialManager.loop: state is already " ++
                       show state
  where
   go = do running <- step mgr
