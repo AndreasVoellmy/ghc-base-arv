@@ -34,6 +34,9 @@ module GHC.Event.SequentialManager
     , registerFd_
     , registerFd
     , closeFd
+    , closeFd_
+    , callbackTableVar
+    , FdData
     ) where
 
 #include "EventConfig.h"
@@ -43,7 +46,7 @@ module GHC.Event.SequentialManager
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
 import Control.Exception (finally)
-import Control.Monad ((=<<), forM_, liftM, sequence_, when)
+import Control.Monad ((=<<), forM_, liftM, sequence, sequence_, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
@@ -51,9 +54,9 @@ import Data.Monoid (mappend, mconcat, mempty)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
 import GHC.Conc.Sync (yield)
-import GHC.List (filter)
+import GHC.List (filter, replicate)
 import GHC.Num (Num(..))
-import GHC.Real ((/), fromIntegral )
+import GHC.Real ((/), fromIntegral, mod)
 import GHC.Show (Show(..))
 import GHC.Event.Clock (getCurrentTime)
 import GHC.Event.Control
@@ -64,6 +67,7 @@ import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
+import GHC.Arr
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
@@ -74,6 +78,17 @@ import qualified GHC.Event.Poll   as Poll
 #else
 # error not implemented for this operating system
 #endif
+
+
+arraySize :: Int
+arraySize = 32
+
+hashFd :: Fd -> Int
+hashFd fd = fromIntegral fd `mod` arraySize
+{-# INLINE hashFd #-}
+
+callbackTableVar :: EventManager -> Fd -> MVar (IM.IntMap [FdData])
+callbackTableVar mgr fd = emFds mgr ! hashFd fd
 
 
 #if defined(HAVE_EPOLL)
@@ -100,7 +115,7 @@ data State = Created
 -- | The event manager state.
 data EventManager = EventManager
     { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(MVar (IM.IntMap [FdData]))
+    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
     , emState        :: {-# UNPACK #-} !(IORef State)
     , emControl      :: {-# UNPACK #-} !Control
     }
@@ -125,7 +140,8 @@ new = newWith =<< newDefaultBackend
 
 newWith :: Backend -> IO EventManager
 newWith be = do
-  iofds <- newMVar IM.empty
+  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
+  let !iofds = listArray (0, arraySize - 1) fdVars
   ctrl <- newControl
   state <- newIORef Created
   _ <- mkWeakIORef state $ do
@@ -209,11 +225,10 @@ registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
 
 
 -- | Register interest in the given events, without waking the event
--- manager thread.  The 'Bool' return value indicates whether the
--- event manager ought to be woken.
+-- manager thread.  
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO ()
 registerFd_ mgr@EventManager{..} cb fd evs = do
-  modifyMVar_ emFds
+  modifyMVar_ (emFds ! hashFd fd)
      (\oldMap -> 
        case IM.insertWith (++) (fromIntegral fd) [FdData evs cb] oldMap of
          (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
@@ -248,11 +263,10 @@ combineEvents ev fdds = mappend ev (eventsOf fdds)
 
 
 -- | Close a file descriptor in a race-safe way.
-closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
-closeFd mgr close fd = do
-  do close fd
-     mfds <- 
-       modifyMVar (emFds mgr)
+closeFd :: EventManager -> Fd -> IO ()
+closeFd mgr fd = do
+  do mfds <- 
+       modifyMVar (emFds mgr ! hashFd fd)
        (\oldMap -> 
          case IM.delete (fromIntegral fd) oldMap of
            (Nothing,  _)       -> return (oldMap, Nothing)
@@ -260,8 +274,15 @@ closeFd mgr close fd = do
        )
      case mfds of
        Nothing -> return ()
-       Just fds -> do wakeManager mgr
-                      forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+       Just fds -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+
+closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd_ oldMap fd = do
+  case IM.delete (fromIntegral fd) oldMap of
+    (Nothing,  _)       -> return oldMap
+    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+                              return newMap
+
 
 
 ------------------------------------------------------------------------
@@ -272,7 +293,7 @@ onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs = 
   if (fd == controlReadFd emControl || fd == wakeupReadFd emControl)
   then handleControlEvent mgr fd evs
-  else do mcbs <- modifyMVar emFds
+  else do mcbs <- modifyMVar (emFds ! hashFd fd)
                    (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of { (mcbs,x) -> (x,mcbs) }))
           case mcbs of
             Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb evs
@@ -309,7 +330,7 @@ data State = Created
 -- | The event manager state.
 data EventManager = EventManager
     { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(MVar (IM.IntMap [FdData]))      
+    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
     , emState        :: {-# UNPACK #-} !(IORef State)
     , emUniqueSource :: {-# UNPACK #-} !UniqueSource      
     , emControl      :: {-# UNPACK #-} !Control
@@ -335,7 +356,8 @@ new = newWith =<< newDefaultBackend
 
 newWith :: Backend -> IO EventManager
 newWith be = do
-  iofds <- newMVar IM.empty
+  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
+  let !iofds = listArray (0, arraySize - 1) fdVars
   ctrl <- newControl
   state <- newIORef Created
   us <- newSource  
@@ -421,7 +443,7 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
       !fd'  = fromIntegral fd
       !fdd = FdData reg evs cb
   modify <- 
-    modifyMVar emFds
+    modifyMVar (emFds ! hashFd fd)
      (\oldMap -> 
        let (!newMap, (oldEvs, newEvs)) =
              case IM.insertWith (++) fd' [fdd] oldMap of
@@ -474,7 +496,7 @@ pairEvents prev m fd = let l = eventsOf prev
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
   do (oldEvs, newEvs) <- 
-       modifyMVar emFds
+       modifyMVar (emFds ! hashFd fd)
        (\oldMap -> 
          let dropReg cbs = case filter ((/= u) . keyUnique . fdKey) cbs of
                                []   -> Nothing
@@ -498,11 +520,10 @@ unregisterFd mgr reg = do
   when wake $ wakeManager mgr
 
 -- | Close a file descriptor in a race-safe way.
-closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
-closeFd mgr close fd = do
-  do close fd
-     mfds <- 
-       modifyMVar (emFds mgr)
+closeFd :: EventManager -> Fd -> IO ()
+closeFd mgr fd = do
+  do mfds <- 
+       modifyMVar (emFds mgr ! hashFd fd)
        (\oldMap -> 
          case IM.delete (fromIntegral fd) oldMap of
            (Nothing,  _)       -> return (oldMap, Nothing)
@@ -513,6 +534,12 @@ closeFd mgr close fd = do
        Just fds -> do wakeManager mgr
                       forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
+closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd_ oldMap fd = do
+  case IM.delete (fromIntegral fd) oldMap of
+    (Nothing,  _)       -> return oldMap
+    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+                              return newMap
 
 ------------------------------------------------------------------------
 -- Utilities
@@ -520,7 +547,7 @@ closeFd mgr close fd = do
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr fd evs = do
-  fdMap <- readMVar (emFds mgr)
+  fdMap <- readMVar (emFds mgr ! hashFd fd)
   case IM.lookup (fromIntegral fd) fdMap of
       Just cbs -> forM_ cbs $ \(FdData reg ev cb) ->
                        when (evs `I.eventIs` ev) (cb reg evs)

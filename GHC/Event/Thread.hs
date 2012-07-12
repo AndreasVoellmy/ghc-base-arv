@@ -2,7 +2,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
-
 module GHC.Event.Thread ( 
   ensureIOManagerIsRunning
   , getSystemEventManager
@@ -24,13 +23,14 @@ import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
 import qualified GHC.Event.Internal as E    
 import qualified GHC.Event.Manager as NE
 import qualified GHC.Event.SequentialManager as SM
+import qualified GHC.Event.IntMap as IM
 import Foreign.C.Error
 import Control.Exception
 import Data.IORef
 import GHC.Conc.Sync
 import System.IO.Unsafe
 import GHC.List (replicate, head)
-import Control.Monad (sequence, sequence_)
+import Control.Monad (sequence, sequence_, forM, zipWithM_)
 import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
@@ -49,10 +49,7 @@ shutdownManagers =
        Just tmgr -> NE.shutdown tmgr
 
 getSystemEventManager :: IO SM.EventManager
-getSystemEventManager = getSystemEventManager'
-
-getSystemEventManager' :: IO SM.EventManager
-getSystemEventManager' = 
+getSystemEventManager = 
   do t <- myThreadId
      (cap, _) <- threadCapability t
      Just (_,mgr) <- readIOArray eventManagerRef cap     
@@ -141,12 +138,14 @@ ensureIOManagerIsRunning
 threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
-  !mgr <- getSystemEventManager' 
+  !mgr <- getSystemEventManager 
   SM.registerFd_ mgr (putMVar m) fd evt
   evt' <- takeMVar m 
   if evt' `E.eventIs` E.evtClose
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
     else return ()
+
+
 
 threadWaitRead :: Fd -> IO ()
 threadWaitRead = threadWait SM.evtRead
@@ -156,13 +155,28 @@ threadWaitWrite :: Fd -> IO ()
 threadWaitWrite = threadWait SM.evtWrite
 {-# INLINE threadWaitWrite #-}
 
+{- Somewhat complicated to avoid some race conditions: 
+(a) grab tables (and hence locks, always in ascending order from 0..n-1);
+(b) close the fd
+(c) delete callbacks, call them, and put the updated table into the table variables
+TODO: Explain why this is needed.
+TODO: Harden this: what happens if there is an exception (synchronous or asynchronous)? Need to restore the locks properly.
+-}
 closeFdWith :: (Fd -> IO ())        -- ^ Action that performs the close.
             -> Fd                   -- ^ File descriptor to close.
             -> IO ()
-closeFdWith close fd = do
-  !mgr <- getSystemEventManager'
-  SM.closeFd mgr close fd
+closeFdWith close fd = do 
+  tableVars <- forM [0,1..numCapabilities-1] (getCallbackTableVar fd)
+  tables    <- forM tableVars takeMVar
+  close fd
+  zipWithM_ (\tableVar table -> SM.closeFd_ table fd >>= putMVar tableVar) tableVars tables
 
+getCallbackTableVar :: Fd -> Int -> IO (MVar (IM.IntMap [SM.FdData]))
+getCallbackTableVar fd cap = 
+  do Just (_,!mgr) <- readIOArray eventManagerRef cap
+     return (SM.callbackTableVar mgr fd)
+  
+                               
 threadDelay :: Int -> IO ()
 threadDelay usecs = mask_ $ do
   Just mgr <- getTimerManager
