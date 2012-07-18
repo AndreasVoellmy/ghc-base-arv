@@ -17,13 +17,14 @@ module GHC.Event.Internal
     , evtWrite
     , evtClose
     , eventIs
+    , evtSubtract
     -- * Timeout type
     , Timeout(..)
     -- * Helpers
     , throwErrnoIfMinus1NoRetry
     ) where
 
-import Data.Bits ((.|.), (.&.))
+import Data.Bits ((.|.), (.&.), complement)
 import Data.List (foldl', intercalate)
 import Data.Monoid (Monoid(..))
 import Foreign.C.Error (eINTR, getErrno, throwErrno)
@@ -75,6 +76,11 @@ instance Monoid Event where
 evtCombine :: Event -> Event -> Event
 evtCombine (Event a) (Event b) = Event (a .|. b)
 {-# INLINE evtCombine #-}
+
+evtSubtract :: Event -> Event -> Event
+evtSubtract (Event a) (Event b) = Event (a .&. complement b)
+{-# INLINE evtSubtract #-}
+
 
 evtConcat :: [Event] -> Event
 evtConcat = foldl' evtCombine evtNothing

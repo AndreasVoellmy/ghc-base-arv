@@ -231,9 +231,9 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
   modifyMVar_ (emFds ! hashFd fd)
      (\oldMap -> 
        case IM.insertWith (++) (fromIntegral fd) [FdData evs cb] oldMap of
-         (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
+         (Nothing,   n) -> do I.modifyFd emBackend fd mempty evs
                               return n
-         (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev) 
+         (Just prev, n) -> do I.modifyFd emBackend fd (eventsOf prev) (combineEvents evs prev) 
                               return n
      )
 {-# INLINE registerFd_ #-}
@@ -294,9 +294,21 @@ onFdEvent mgr@EventManager{..} fd evs =
   if (fd == controlReadFd emControl || fd == wakeupReadFd emControl)
   then handleControlEvent mgr fd evs
   else do mcbs <- modifyMVar (emFds ! hashFd fd)
-                   (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of { (mcbs,x) -> (x,mcbs) }))
+                   (\oldMap -> 
+                     let dropReg cbs = 
+                           case filter (\(FdData ev cb) -> not (evs `I.eventIs` ev)) cbs of 
+                             [] -> Nothing
+                             xs -> Just xs
+                     in
+                      case IM.updateWith dropReg (fromIntegral fd) oldMap of 
+                       (mcbs,newMap) -> 
+                         do let !oldEvs = case mcbs of { Just cbs -> eventsOf cbs ; Nothing -> mempty}
+                                !newEvs = oldEvs `I.evtSubtract` evs
+                            I.modifyFd emBackend fd oldEvs newEvs  
+                            return (newMap,mcbs)
+                   )
           case mcbs of
-            Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb evs
+            Just cbs -> forM_ cbs $ \(FdData ev cb) -> when (evs `I.eventIs` ev) $ cb evs
             Nothing  -> return ()
 
 #else
