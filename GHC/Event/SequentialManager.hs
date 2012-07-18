@@ -7,7 +7,7 @@
            , TypeSynonymInstances
            , FlexibleInstances
   #-}
-
+{-# LANGUAGE MagicHash, UnboxedTuples #-}
 module GHC.Event.SequentialManager
     ( -- * Types
       EventManager
@@ -33,6 +33,7 @@ module GHC.Event.SequentialManager
     , FdKey
     , registerFd_
     , registerFd
+    , unregisterFd_
     , closeFd
     , closeFd_
     , callbackTableVar
@@ -68,6 +69,11 @@ import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
 import GHC.Arr
+
+import GHC.Foreign(withCString)
+import GHC.Ptr
+import GHC.IO.Encoding (utf8)
+import Text.Show (show)
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
@@ -156,6 +162,8 @@ newWith be = do
                          }
   _ <- registerControlFd mgr (controlReadFd ctrl) evtRead
   _ <- registerControlFd mgr (wakeupReadFd ctrl) evtRead
+  traceEventIO ("newWith controlReadFd: " ++ show (controlReadFd ctrl))
+  traceEventIO ("newWith controlReadFd: " ++ show (wakeupReadFd ctrl))
   return mgr
 
   
@@ -287,18 +295,41 @@ closeFd_ oldMap fd = do
 
 ------------------------------------------------------------------------
 -- Utilities
+       
+traceEventIO :: String -> IO ()
+#ifdef __GLASGOW_HASKELL__
+traceEventIO msg =
+  withCString utf8 msg $ \(Ptr p) -> IO $ \s ->
+    case traceEvent# p s of s' -> (# s', () #)
+#else
+#error ack
+#endif 
 
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs = 
+  traceEventIO ("onFdEvent for fd: " ++ show fd) >> 
   if (fd == controlReadFd emControl || fd == wakeupReadFd emControl)
   then handleControlEvent mgr fd evs
   else do mcbs <- modifyMVar (emFds ! hashFd fd)
                    (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of { (mcbs,x) -> (x,mcbs) }))
           case mcbs of
             Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb evs
-            Nothing  -> return ()
+            Nothing  -> traceEventIO "onFdEvent: found no callbacks!" >> return ()
 
+
+
+unregisterFd_ :: EventManager -> FdKey -> IO Bool
+unregisterFd_ EventManager{..} fd =
+  modifyMVar_ (emFds ! hashFd fd) (\oldMap -> 
+                                    case IM.delete (fromIntegral fd) oldMap of 
+                                      (mcbs,newMap) -> 
+                                        do case mcbs of 
+                                             Just cbs -> I.modifyFd emBackend fd (eventsOf cbs) mempty
+                                             Nothing  -> return ()
+                                           return newMap
+                                  )
+  >> return False
 #else
 
 

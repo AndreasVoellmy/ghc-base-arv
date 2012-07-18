@@ -140,7 +140,7 @@ threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
   !mgr <- getSystemEventManager 
   SM.registerFd_ mgr (putMVar m) fd evt
-  evt' <- takeMVar m 
+  evt' <- takeMVar m `onException` SM.unregisterFd_ mgr fd
   if evt' `E.eventIs` E.evtClose
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
     else return ()
