@@ -8,6 +8,8 @@ module GHC.Event.Thread (
   , shutdownManagers
   , threadWaitRead
   , threadWaitWrite
+  , threadWaitRead2
+  , threadWaitWrite2
   , closeFdWith
   , threadDelay
   , registerDelay
@@ -145,8 +147,6 @@ threadWait evt fd = mask_ $ do
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
     else return ()
 
-
-
 threadWaitRead :: Fd -> IO ()
 threadWaitRead = threadWait SM.evtRead
 {-# INLINE threadWaitRead #-}
@@ -154,6 +154,24 @@ threadWaitRead = threadWait SM.evtRead
 threadWaitWrite :: Fd -> IO ()
 threadWaitWrite = threadWait SM.evtWrite
 {-# INLINE threadWaitWrite #-}
+
+threadWait2 :: NE.Event -> Fd -> Fd -> IO ()
+threadWait2 evt fd1 fd2 = mask_ $ do
+  m <- newEmptyMVar
+  !mgr <- getSystemEventManager 
+  SM.registerFd2_ mgr (putMVar m) fd1 fd2 evt
+  evt' <- takeMVar m 
+  if evt' `E.eventIs` E.evtClose
+    then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
+    else return ()
+
+threadWaitRead2 :: Fd -> Fd -> IO ()
+threadWaitRead2 = threadWait2 SM.evtRead
+{-# INLINE threadWaitRead2 #-}
+
+threadWaitWrite2 :: Fd -> Fd -> IO ()
+threadWaitWrite2 = threadWait2 SM.evtWrite
+{-# INLINE threadWaitWrite2 #-}
 
 {- Somewhat complicated to avoid some race conditions: 
 (a) grab tables (and hence locks, always in ascending order from 0..n-1);

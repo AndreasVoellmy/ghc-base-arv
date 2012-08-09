@@ -32,6 +32,7 @@ module GHC.Event.SequentialManager
     , IOCallback
     , FdKey
     , registerFd_
+    , registerFd2_
     , registerFd
     , closeFd
     , closeFd_
@@ -237,6 +238,27 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
                               return n
      )
 {-# INLINE registerFd_ #-}
+
+registerFd2_ :: EventManager -> IOCallback -> Fd -> Fd -> Event -> IO ()
+registerFd2_ mgr@EventManager{..} cb fd1 fd2 evs = do
+  modifyMVar_ (emFds ! hashFd fd1)
+     (\oldMap -> 
+       case IM.insertWith (++) (fromIntegral fd1) [FdData evs cb] oldMap of
+         (Nothing,   n) -> do I.modifyFdOnce emBackend fd1 evs
+                              return n
+         (Just prev, n) -> do I.modifyFdOnce emBackend fd1 (combineEvents evs prev) 
+                              return n
+     )
+  >>
+  modifyMVar_ (emFds ! hashFd fd2)
+     (\oldMap -> 
+       case IM.insertWith (++) (fromIntegral fd2) [FdData evs cb] oldMap of
+         (Nothing,   n) -> do I.modifyFdOnce emBackend fd2 evs
+                              return n
+         (Just prev, n) -> do I.modifyFdOnce emBackend fd2 (combineEvents evs prev) 
+                              return n
+     )
+{-# INLINE registerFd2_ #-}
 
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
