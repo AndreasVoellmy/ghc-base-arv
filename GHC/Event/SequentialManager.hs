@@ -32,7 +32,6 @@ module GHC.Event.SequentialManager
     , IOCallback
     , FdKey
     , registerFd_
-    , registerFd2_
     , registerFd
     , closeFd
     , closeFd_
@@ -69,6 +68,7 @@ import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
 import GHC.Arr
+import Data.Tuple (snd)
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
@@ -105,7 +105,7 @@ data FdData = FdData {
 type FdKey = Fd
 
 -- | Callback invoked on I/O events.
-type IOCallback = Event -> IO ()
+type IOCallback = Fd -> Event -> IO ()
 
 data State = Created
            | Running
@@ -239,27 +239,6 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
      )
 {-# INLINE registerFd_ #-}
 
-registerFd2_ :: EventManager -> IOCallback -> Fd -> Fd -> Event -> IO ()
-registerFd2_ mgr@EventManager{..} cb fd1 fd2 evs = do
-  modifyMVar_ (emFds ! hashFd fd1)
-     (\oldMap -> 
-       case IM.insertWith (++) (fromIntegral fd1) [FdData evs cb] oldMap of
-         (Nothing,   n) -> do I.modifyFdOnce emBackend fd1 evs
-                              return n
-         (Just prev, n) -> do I.modifyFdOnce emBackend fd1 (combineEvents evs prev) 
-                              return n
-     )
-  >>
-  modifyMVar_ (emFds ! hashFd fd2)
-     (\oldMap -> 
-       case IM.insertWith (++) (fromIntegral fd2) [FdData evs cb] oldMap of
-         (Nothing,   n) -> do I.modifyFdOnce emBackend fd2 evs
-                              return n
-         (Just prev, n) -> do I.modifyFdOnce emBackend fd2 (combineEvents evs prev) 
-                              return n
-     )
-{-# INLINE registerFd2_ #-}
-
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
@@ -296,13 +275,13 @@ closeFd mgr fd = do
        )
      case mfds of
        Nothing -> return ()
-       Just fds -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+       Just fds -> do forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
 
 closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
 closeFd_ oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
     (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
                               return newMap
 
 
@@ -318,11 +297,10 @@ onFdEvent mgr@EventManager{..} fd evs =
   else do mcbs <- modifyMVar (emFds ! hashFd fd)
                    (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of { (mcbs,x) -> (x,mcbs) }))
           case mcbs of
-            Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb evs
+            Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb fd evs
             Nothing  -> return ()
 
 #else
-
 
 
 ------------------------------------------------------------------------

@@ -8,8 +8,8 @@ module GHC.Event.Thread (
   , shutdownManagers
   , threadWaitRead
   , threadWaitWrite
-  , threadWaitRead2
-  , threadWaitWrite2
+  , threadWaitReadSTM
+  , threadWaitWriteSTM
   , closeFdWith
   , threadDelay
   , registerDelay
@@ -137,11 +137,34 @@ ensureIOManagerIsRunning
                   writeIOArray eventManagerRef i (Just (t,mgr))
        
 
+threadWaitSTM :: NE.Event -> Fd -> IO (STM ())
+threadWaitSTM evt fd = mask_ $ do
+  m <- newTVarIO Nothing
+  !mgr <- getSystemEventManager 
+  SM.registerFd_ mgr (\fd evt -> atomically (writeTVar m (Just evt))) fd evt
+  return (do mevt <- readTVar m
+             case mevt of
+               Nothing -> retry
+               Just evt -> 
+                 if evt `E.eventIs` E.evtClose
+                 then throwSTM $ errnoToIOError "threadWait" eBADF Nothing Nothing
+                 else return ()
+         )
+
+threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM = threadWaitSTM SM.evtRead
+{-# INLINE threadWaitReadSTM #-}
+
+threadWaitWriteSTM :: Fd -> IO (STM ())
+threadWaitWriteSTM = threadWaitSTM SM.evtWrite
+{-# INLINE threadWaitWriteSTM #-}
+
+
 threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
   !mgr <- getSystemEventManager 
-  SM.registerFd_ mgr (putMVar m) fd evt
+  SM.registerFd_ mgr (\fd evt -> putMVar m evt) fd evt
   evt' <- takeMVar m 
   if evt' `E.eventIs` E.evtClose
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
@@ -154,24 +177,6 @@ threadWaitRead = threadWait SM.evtRead
 threadWaitWrite :: Fd -> IO ()
 threadWaitWrite = threadWait SM.evtWrite
 {-# INLINE threadWaitWrite #-}
-
-threadWait2 :: NE.Event -> Fd -> Fd -> IO ()
-threadWait2 evt fd1 fd2 = mask_ $ do
-  m <- newEmptyMVar
-  !mgr <- getSystemEventManager 
-  SM.registerFd2_ mgr (putMVar m) fd1 fd2 evt
-  evt' <- takeMVar m 
-  if evt' `E.eventIs` E.evtClose
-    then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
-    else return ()
-
-threadWaitRead2 :: Fd -> Fd -> IO ()
-threadWaitRead2 = threadWait2 SM.evtRead
-{-# INLINE threadWaitRead2 #-}
-
-threadWaitWrite2 :: Fd -> Fd -> IO ()
-threadWaitWrite2 = threadWait2 SM.evtWrite
-{-# INLINE threadWaitWrite2 #-}
 
 {- Somewhat complicated to avoid some race conditions: 
 (a) grab tables (and hence locks, always in ascending order from 0..n-1);

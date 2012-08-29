@@ -61,8 +61,8 @@ module GHC.Conc
         , registerDelay         -- :: Int -> IO (TVar Bool)
         , threadWaitRead        -- :: Int -> IO ()
         , threadWaitWrite       -- :: Int -> IO ()
-        , threadWaitRead2        -- :: Int -> IO ()
-        , threadWaitWrite2       -- :: Int -> IO ()
+        , threadWaitReadSTM        -- :: Int -> IO (STM ())
+        , threadWaitWriteSTM       -- :: Int -> IO (STM ())
         , closeFdWith           -- :: (Fd -> IO ()) -> Fd -> IO ()
 
         -- * TVars
