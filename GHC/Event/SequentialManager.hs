@@ -68,7 +68,6 @@ import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
 import GHC.Arr
-import Data.Tuple (snd)
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
