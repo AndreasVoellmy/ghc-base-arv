@@ -22,6 +22,12 @@ module GHC.Event.EPoll
     (
       new
     , available
+    , EPoll
+    , newEPoll
+    , modifyFd
+    , delete
+    , poll
+    , pollNonBlock
     ) where
 
 import qualified GHC.Event.Internal as E
@@ -33,9 +39,25 @@ import GHC.Base
 new :: IO E.Backend
 new = error "EPoll back end not implemented for this platform"
 
+newEPoll :: IO EPoll
+newEPoll = error "EPoll back end not implemented for this platform"
+
 available :: Bool
 available = False
 {-# INLINE available #-}
+
+
+delete :: EPoll -> IO ()
+delete _ = error "EPoll back end not implemented for this platform"
+
+modifyFd :: EPoll -> Fd -> E.Event -> E.Event -> IO ()
+modifyFd _ _ _ _ = error "EPoll back end not implemented for this platform"
+
+poll :: EPoll                     -- ^ state
+     -> Timeout                   -- ^ timeout in milliseconds
+     -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
+     -> IO Int
+poll _ _ _ = error "EPoll back end not implemented for this platform"
 #else
 
 #include <sys/epoll.h>
@@ -44,7 +66,7 @@ import Control.Monad (when)
 import Data.Bits (Bits, (.|.), (.&.))
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
-import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_)
+import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_, Errno, eNOENT, throwErrno, getErrno)
 import Foreign.C.Types (CInt(..))
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr)
@@ -75,8 +97,14 @@ new :: IO E.Backend
 new = do
   epfd <- epollCreate
   evts <- A.new 64
-  let !be = E.backend poll modifyFd delete (EPoll epfd evts)
+  let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete (EPoll epfd evts)
   return be
+
+newEPoll :: IO EPoll
+newEPoll = do
+  epfd <- epollCreate
+  evts <- A.new 64
+  return (EPoll epfd evts)
 
 delete :: EPoll -> IO ()
 delete be = do
@@ -92,13 +120,28 @@ modifyFd ep fd oevt nevt = with (Event (fromEvent nevt) fd) $
            | nevt == mempty = controlOpDelete
            | otherwise      = controlOpModify
 
+
+modifyFdOnce :: EPoll -> Fd -> E.Event -> IO ()
+modifyFdOnce ep fd evt = 
+  do let !ev = fromEvent evt .|. epollOneShot
+     res <- with (Event ev fd) $
+            epollControl_ (epollFd ep) controlOpModify fd
+     if res == 0
+       then return ()
+       else do err <- getErrno
+               if err == eNOENT
+                 then with (Event ev fd) $
+                      epollControl (epollFd ep) controlOpAdd fd
+                 else throwErrno "modifyFdOnce"
+  
+
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
 -- events that are ready.
 poll :: EPoll                     -- ^ state
      -> Timeout                   -- ^ timeout in milliseconds
      -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-     -> IO ()
+     -> IO Int
 poll ep timeout f = do
   let events = epollEvents ep
 
@@ -111,6 +154,27 @@ poll ep timeout f = do
     A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
     cap <- A.capacity events
     when (cap == n) $ A.ensureCapacity events (2 * cap)
+  return n
+  
+
+-- | Select a set of file descriptors which are ready for I/O
+-- operations and call @f@ for all ready file descriptors, passing the
+-- events that are ready.
+pollNonBlock :: EPoll                     -- ^ state
+               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
+               -> IO Int
+pollNonBlock ep f = do
+  let events = epollEvents ep
+  -- Will return zero if the system call was interupted, in which case
+  -- we just return (and try again later.)
+  n <- A.unsafeLoad events $ \es cap ->
+       epollWaitUnsafe (epollFd ep) es cap 0
+  if n > 0 
+    then do A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
+            cap <- A.capacity events
+            when (cap == n) $ A.ensureCapacity events (2 * cap)
+    else return ()
+  return n
 
 newtype EPollFd = EPollFd {
       fromEPollFd :: CInt
@@ -152,6 +216,7 @@ newtype EventType = EventType {
  , epollOut = EPOLLOUT
  , epollErr = EPOLLERR
  , epollHup = EPOLLHUP
+ , epollOneShot = EPOLLONESHOT
  }
 
 -- | Create a new epoll context, returning a file descriptor associated with the context.
@@ -174,11 +239,23 @@ epollControl :: EPollFd -> ControlOp -> Fd -> Ptr Event -> IO ()
 epollControl (EPollFd epfd) (ControlOp op) (Fd fd) event =
     throwErrnoIfMinus1_ "epollControl" $ c_epoll_ctl epfd op fd event
 
+epollControl_ :: EPollFd -> ControlOp -> Fd -> Ptr Event -> IO CInt
+epollControl_ (EPollFd epfd) (ControlOp op) (Fd fd) event =
+    c_epoll_ctl epfd op fd event
+
+
 epollWait :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
 epollWait (EPollFd epfd) events numEvents timeout =
     fmap fromIntegral .
     E.throwErrnoIfMinus1NoRetry "epollWait" $
     c_epoll_wait epfd events (fromIntegral numEvents) (fromIntegral timeout)
+
+epollWaitUnsafe :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
+epollWaitUnsafe (EPollFd epfd) events numEvents timeout =
+    fmap fromIntegral .
+    E.throwErrnoIfMinus1NoRetry "epollWait" $
+    c_epoll_wait_unsafe epfd events (fromIntegral numEvents) (fromIntegral timeout)
+
 
 fromEvent :: E.Event -> EventType
 fromEvent e = remap E.evtRead  epollIn .|.
@@ -206,6 +283,10 @@ foreign import ccall unsafe "sys/epoll.h epoll_ctl"
 
 foreign import ccall safe "sys/epoll.h epoll_wait"
     c_epoll_wait :: CInt -> Ptr Event -> CInt -> CInt -> IO CInt
+
+foreign import ccall unsafe "sys/epoll.h epoll_wait"
+    c_epoll_wait_unsafe :: CInt -> Ptr Event -> CInt -> CInt -> IO CInt
+
 
 #endif /* defined(HAVE_EPOLL) */
 

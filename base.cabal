@@ -240,6 +240,7 @@ Library {
             GHC.Event.Internal
             GHC.Event.KQueue
             GHC.Event.Manager
+            GHC.Event.SequentialManager
             GHC.Event.PSQ
             GHC.Event.Poll
             GHC.Event.Thread

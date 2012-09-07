@@ -61,6 +61,8 @@ module Control.Concurrent (
         threadDelay,            -- :: Int -> IO ()
         threadWaitRead,         -- :: Int -> IO ()
         threadWaitWrite,        -- :: Int -> IO ()
+        threadWaitReadSTM, 
+        threadWaitWriteSTM,
 #endif
 
         -- * Communication abstractions
@@ -116,7 +118,7 @@ import Control.Exception.Base as Exception
 
 #ifdef __GLASGOW_HASKELL__
 import GHC.Exception
-import GHC.Conc hiding (threadWaitRead, threadWaitWrite)
+import GHC.Conc hiding (threadWaitRead, threadWaitWrite, threadWaitReadSTM, threadWaitWriteSTM)
 import qualified GHC.Conc
 import GHC.IO           ( IO(..), unsafeInterleaveIO, unsafeUnmask )
 import GHC.IORef        ( newIORef, readIORef, writeIORef )
@@ -506,6 +508,15 @@ threadWaitWrite fd
 #else
   = GHC.Conc.threadWaitWrite fd
 #endif
+
+
+threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM fd
+  = GHC.Conc.threadWaitReadSTM fd 
+
+threadWaitWriteSTM :: Fd -> IO (STM ())
+threadWaitWriteSTM fd 
+  = GHC.Conc.threadWaitWriteSTM fd
 
 #ifdef mingw32_HOST_OS
 foreign import ccall unsafe "rtsSupportsBoundThreads" threaded :: Bool

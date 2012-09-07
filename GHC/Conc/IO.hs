@@ -38,6 +38,8 @@ module GHC.Conc.IO
         , registerDelay         -- :: Int -> IO (TVar Bool)
         , threadWaitRead        -- :: Int -> IO ()
         , threadWaitWrite       -- :: Int -> IO ()
+        , threadWaitReadSTM        -- :: Int -> IO ()
+        , threadWaitWriteSTM       -- :: Int -> IO ()
         , closeFdWith           -- :: (Fd -> IO ()) -> Fd -> IO ()
 
 #ifdef mingw32_HOST_OS
@@ -107,6 +109,15 @@ threadWaitWrite fd
         case fromIntegral fd of { I# fd# ->
         case waitWrite# fd# s of { s' -> (# s', () #)
         }}
+
+threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM fd
+  | threaded  = Event.threadWaitReadSTM fd
+
+threadWaitWriteSTM :: Fd ->IO (STM ())
+threadWaitWriteSTM fd
+  | threaded  = Event.threadWaitWriteSTM fd
+
 
 -- | Close a file descriptor in a concurrency-safe way (GHC only).  If
 -- you are using 'threadWaitRead' or 'threadWaitWrite' to perform

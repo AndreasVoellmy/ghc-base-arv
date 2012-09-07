@@ -55,8 +55,16 @@ data Poll = Poll {
     }
 
 new :: IO E.Backend
-new = E.backend poll modifyFd (\_ -> return ()) `liftM`
+new = E.backend poll pollNonBlock modifyFd modifyFdOnce (\_ -> return ()) `liftM`
       liftM2 Poll (newMVar =<< A.empty) A.empty
+
+pollNonBlock :: Poll                     -- ^ state
+               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
+               -> IO Int
+pollNonBlock = error "pollNonBlock not yet defined"
+
+modifyFdOnce :: Poll -> Fd -> E.Event -> IO ()
+modifyFdOnce = error "modifyFdOnce not yet defined"
 
 modifyFd :: Poll -> Fd -> E.Event -> E.Event -> IO ()
 modifyFd p fd oevt nevt =
@@ -79,7 +87,7 @@ reworkFd p (PollFd fd npevt opevt) = do
 poll :: Poll
      -> E.Timeout
      -> (Fd -> E.Event -> IO ())
-     -> IO ()
+     -> IO Int
 poll p tout f = do
   let a = pollFd p
   mods <- swapMVar (pollChanges p) =<< A.empty
@@ -94,6 +102,7 @@ poll p tout f = do
                 let i' = i + 1
                 return (i', i' == n)
         else return (i, True)
+  return (fromIntegral n)
 
 fromTimeout :: E.Timeout -> Int
 fromTimeout E.Forever     = -1
