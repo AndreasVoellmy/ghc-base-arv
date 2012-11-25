@@ -44,7 +44,8 @@ module GHC.Event.SequentialManager
 ------------------------------------------------------------------------
 -- Imports
 
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar,
+                                readMVar)
 import Control.Exception (finally)
 import Control.Monad ((=<<), forM_, liftM, sequence, sequence_, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
@@ -79,7 +80,6 @@ import qualified GHC.Event.Poll   as Poll
 # error not implemented for this operating system
 #endif
 
-
 arraySize :: Int
 arraySize = 32
 
@@ -89,7 +89,6 @@ hashFd fd = fromIntegral fd `mod` arraySize
 
 callbackTableVar :: EventManager -> Fd -> MVar (IM.IntMap [FdData])
 callbackTableVar mgr fd = emFds mgr ! hashFd fd
-
 
 #if defined(HAVE_EPOLL)
 ------------------------------------------------------------------------
@@ -364,8 +363,10 @@ newWith be = do
                          , emUniqueRef = uref
                          , emControl = ctrl
                          }
-  _ <- registerFdPersistent_ mgr (handleControlEvent mgr) (controlReadFd ctrl) evtRead
-  _ <- registerFdPersistent_ mgr (handleControlEvent mgr) (wakeupReadFd ctrl) evtRead
+  _ <- registerFdPersistent_
+         mgr (handleControlEvent mgr) (controlReadFd ctrl) evtRead
+  _ <- registerFdPersistent_
+         mgr (handleControlEvent mgr) (wakeupReadFd ctrl) evtRead
   return mgr
 
 -- | Asynchronously shuts down the event manager, if running.
@@ -412,12 +413,13 @@ step mgr@EventManager{..} = do
   state <- readIORef emState
   state `seq` return (state == Running)
  where
-  waitForIO = 
-    do n <- I.pollNonBlock emBackend (onFdEvent mgr)
-       when (n <= 0) (do yield
-                         n <- I.pollNonBlock emBackend (onFdEvent mgr)
-                         when (n <= 0) (I.poll emBackend Forever (onFdEvent mgr) >> return ())
-                     )
+  waitForIO = do
+    n <- I.pollNonBlock emBackend (onFdEvent mgr)
+    when (n <= 0) (do yield
+                      n <- I.pollNonBlock emBackend (onFdEvent mgr)
+                      when (n <= 0) (do I.poll emBackend Forever (onFdEvent mgr)
+                                        return ())
+                  )
 
 
 ------------------------------------------------------------------------
@@ -454,7 +456,12 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
 -- event manager ought to be woken.
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event
             -> IO (FdKey, Bool)
-registerFd_ mgr cb fd evs = registerFdPersistent_ mgr (\reg ev -> unregisterFd_ mgr reg >> cb reg ev) fd evs            
+registerFd_ mgr cb fd evs =
+  registerFdPersistent_
+    mgr
+    (\reg ev -> unregisterFd_ mgr reg >> cb reg ev)
+    fd
+    evs
 {-# INLINE registerFd_ #-}
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
@@ -523,15 +530,17 @@ closeFd mgr fd = do
        )
      case mfds of
        Nothing -> return ()
-       Just fds -> do wakeManager mgr
-                      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
+       Just fds -> do
+         wakeManager mgr
+         forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
 closeFd_ oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
     (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
-                              return newMap
+    (Just fds, !newMap) -> do
+      forM_ fds $ \(FdData ev cb) -> cb (ev `mappend` evtClose)
+      return newMap
 
 ------------------------------------------------------------------------
 -- Utilities
