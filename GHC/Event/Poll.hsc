@@ -55,8 +55,9 @@ data Poll = Poll {
     }
 
 new :: IO E.Backend
-new = E.backend poll pollNonBlock modifyFd modifyFdOnce (\_ -> return ()) `liftM`
-      liftM2 Poll (newMVar =<< A.empty) A.empty
+new =
+  E.backend poll pollNonBlock modifyFd modifyFdOnce (\_ -> return ()) `liftM`
+  liftM2 Poll (newMVar =<< A.empty) A.empty
 
 pollNonBlock :: Poll                     -- ^ state
                -> (Fd -> E.Event -> IO ())  -- ^ I/O callback

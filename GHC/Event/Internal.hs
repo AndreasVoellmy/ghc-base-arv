@@ -125,7 +125,8 @@ backend :: (a -> Timeout -> (Fd -> Event -> IO ()) -> IO Int)
         -> (a -> IO ())
         -> a
         -> Backend
-backend bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete state = Backend state bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete
+backend bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete state =
+  Backend state bPoll bPollNonBlock bModifyFd bModifyFdOnce bDelete
 {-# INLINE backend #-}
 
 poll :: Backend -> Timeout -> (Fd -> Event -> IO ()) -> IO Int

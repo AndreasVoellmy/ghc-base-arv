@@ -66,7 +66,8 @@ import Control.Monad (when)
 import Data.Bits (Bits, (.|.), (.&.))
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
-import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_, Errno, eNOENT, throwErrno, getErrno)
+import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_,
+                        Errno, eNOENT, throwErrno, getErrno)
 import Foreign.C.Types (CInt(..))
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr)
@@ -97,7 +98,8 @@ new :: IO E.Backend
 new = do
   epfd <- epollCreate
   evts <- A.new 64
-  let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete (EPoll epfd evts)
+  let epoll = EPoll epfd evts
+  let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete epoll
   return be
 
 newEPoll :: IO EPoll
@@ -243,7 +245,6 @@ epollControl_ :: EPollFd -> ControlOp -> Fd -> Ptr Event -> IO CInt
 epollControl_ (EPollFd epfd) (ControlOp op) (Fd fd) event =
     c_epoll_ctl epfd op fd event
 
-
 epollWait :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
 epollWait (EPollFd epfd) events numEvents timeout =
     fmap fromIntegral .
@@ -254,22 +255,27 @@ epollWaitUnsafe :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
 epollWaitUnsafe (EPollFd epfd) events numEvents timeout =
     fmap fromIntegral .
     E.throwErrnoIfMinus1NoRetry "epollWait" $
-    c_epoll_wait_unsafe epfd events (fromIntegral numEvents) (fromIntegral timeout)
-
+    c_epoll_wait_unsafe
+      epfd
+      events
+      (fromIntegral numEvents)
+      (fromIntegral timeout)
 
 fromEvent :: E.Event -> EventType
 fromEvent e = remap E.evtRead  epollIn .|.
               remap E.evtWrite epollOut
-  where remap evt to
-            | e `E.eventIs` evt = to
-            | otherwise         = 0
+  where
+    remap evt to
+      | e `E.eventIs` evt = to
+      | otherwise         = 0
 
 toEvent :: EventType -> E.Event
 toEvent e = remap (epollIn  .|. epollErr .|. epollHup) E.evtRead `mappend`
             remap (epollOut .|. epollErr .|. epollHup) E.evtWrite
-  where remap evt to
-            | e .&. evt /= 0 = to
-            | otherwise      = mempty
+  where
+    remap evt to
+      | e .&. evt /= 0 = to
+      | otherwise      = mempty
 
 fromTimeout :: Timeout -> Int
 fromTimeout Forever     = -1

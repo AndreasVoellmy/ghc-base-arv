@@ -136,7 +136,6 @@ ensureIOManagerIsRunning
                   labelThread t "IOManager"
                   writeIOArray eventManagerRef i (Just (t,mgr))
        
-
 threadWaitSTM :: NE.Event -> Fd -> IO (STM ())
 threadWaitSTM evt fd = mask_ $ do
   m <- newTVarIO Nothing
@@ -159,7 +158,6 @@ threadWaitWriteSTM :: Fd -> IO (STM ())
 threadWaitWriteSTM = threadWaitSTM SM.evtWrite
 {-# INLINE threadWaitWriteSTM #-}
 
-
 threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
@@ -178,12 +176,15 @@ threadWaitWrite :: Fd -> IO ()
 threadWaitWrite = threadWait SM.evtWrite
 {-# INLINE threadWaitWrite #-}
 
-{- Somewhat complicated to avoid some race conditions: 
+{-
+closeFdWith is somewhat complicated. It performs the following actions
+(order is important here):
 (a) grab tables (and hence locks, always in ascending order from 0..n-1);
-(b) close the fd
-(c) delete callbacks, call them, and put the updated table into the table variables
-TODO: Explain why this is needed.
-TODO: Harden this: what happens if there is an exception (synchronous or asynchronous)? Need to restore the locks properly.
+(b) close the fd;
+(c) delete callbacks, call them, and put the updated table into the table
+variables;
+TODO: Harden this: what happens if there is an exception (synchronous or
+asynchronous)? Need to restore the locks properly.
 -}
 closeFdWith :: (Fd -> IO ())        -- ^ Action that performs the close.
             -> Fd                   -- ^ File descriptor to close.
@@ -192,14 +193,16 @@ closeFdWith close fd = do
   tableVars <- forM [0,1..numCapabilities-1] (getCallbackTableVar fd)
   tables    <- forM tableVars takeMVar
   close fd
-  zipWithM_ (\tableVar table -> SM.closeFd_ table fd >>= putMVar tableVar) tableVars tables
+  zipWithM_
+    (\tableVar table -> SM.closeFd_ table fd >>= putMVar tableVar)
+    tableVars
+    tables
 
 getCallbackTableVar :: Fd -> Int -> IO (MVar (IM.IntMap [SM.FdData]))
 getCallbackTableVar fd cap = 
   do Just (_,!mgr) <- readIOArray eventManagerRef cap
      return (SM.callbackTableVar mgr fd)
   
-                               
 threadDelay :: Int -> IO ()
 threadDelay usecs = mask_ $ do
   Just mgr <- getTimerManager
@@ -214,14 +217,11 @@ registerDelay usecs = do
   _ <- NE.registerTimeout mgr usecs . atomically $ writeTVar t True
   return t
 
-
-
 foreign import ccall unsafe "getOrSetSystemEventThreadEventManagerStore"
     getOrSetSystemEventThreadEventManagerStore :: Ptr a -> IO (Ptr a)
 
 foreign import ccall unsafe "getOrSetSystemEventThreadIOManagerThreadStore"
     getOrSetSystemEventThreadIOManagerThreadStore :: Ptr a -> IO (Ptr a)
-
 
 foreign import ccall unsafe "getOrSetSystemEventThreadEventManagerLock"
     getOrSetSystemEventThreadEventManagerLock :: Ptr a -> IO (Ptr a)

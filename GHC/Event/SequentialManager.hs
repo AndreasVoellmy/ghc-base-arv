@@ -96,9 +96,9 @@ callbackTableVar mgr fd = emFds mgr ! hashFd fd
 -- Types
 
 data FdData = FdData {
-      fdEvents    :: {-# UNPACK #-} !Event
-    , _fdCallback :: !IOCallback
-    }
+  fdEvents      :: {-# UNPACK #-} !Event
+  , _fdCallback :: !IOCallback
+  }
 
 -- | A file descriptor registration cookie.
 type FdKey = Fd
@@ -114,14 +114,11 @@ data State = Created
 
 -- | The event manager state.
 data EventManager = EventManager
-    { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
-    , emState        :: {-# UNPACK #-} !(IORef State)
-    , emControl      :: {-# UNPACK #-} !Control
+    { emBackend :: !Backend
+    , emFds     :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
+    , emState   :: {-# UNPACK #-} !(IORef State)
+    , emControl :: {-# UNPACK #-} !Control
     }
-
-------------------------------------------------------------------------
--- Creation
 
 handleControlEvent :: EventManager -> Fd -> Event -> IO ()
 handleControlEvent mgr fd _evt = do
@@ -158,8 +155,6 @@ newWith be = do
   _ <- registerControlFd mgr (wakeupReadFd ctrl) evtRead
   return mgr
 
-  
-  
 -- | Asynchronously shuts down the event manager, if running.
 shutdown :: EventManager -> IO ()
 shutdown mgr = do
@@ -192,8 +187,8 @@ loop mgr@EventManager{..} = do
     Created -> go `finally` cleanup mgr
     Dying   -> cleanup mgr
     _       -> do cleanup mgr
-                  error $ "GHC.Event.SequentialManager.loop: state is already " ++
-                      show state
+                  error $ "GHC.Event.SequentialManager.loop: state is already "
+                          ++ show state
  where
   go = do running <- step mgr
           when running (yield >> go) 
@@ -208,21 +203,20 @@ step mgr@EventManager{..} = do
     do n <- I.pollNonBlock emBackend (onFdEvent mgr)
        when (n <= 0) (do yield
                          n <- I.pollNonBlock emBackend (onFdEvent mgr)
-                         when (n <= 0) (I.poll emBackend Forever (onFdEvent mgr) >> return ())
+                         when
+                           (n <= 0)
+                           (do I.poll emBackend Forever (onFdEvent mgr)
+                               return ())
                      )
-
 
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
-
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.  The 'Bool' return value indicates whether the
 -- event manager ought to be woken.
 registerControlFd :: EventManager -> Fd -> Event -> IO ()
 registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
-
-
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.  
@@ -231,13 +225,14 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
   modifyMVar_ (emFds ! hashFd fd)
      (\oldMap -> 
        case IM.insertWith (++) (fromIntegral fd) [FdData evs cb] oldMap of
-         (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
-                              return n
-         (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev) 
-                              return n
+         (Nothing,   n) -> do
+           I.modifyFdOnce emBackend fd evs
+           return n
+         (Just prev, n) -> do
+           I.modifyFdOnce emBackend fd (combineEvents evs prev) 
+           return n
      )
 {-# INLINE registerFd_ #-}
-
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
@@ -247,7 +242,6 @@ registerFd mgr cb fd evs = do
   registerFd_ mgr cb fd evs
   wakeManager mgr
 {-# INLINE registerFd #-}
-
 
 -- | Wake up the event manager.
 wakeManager :: EventManager -> IO ()
@@ -261,7 +255,6 @@ combineEvents ev [fdd] = mappend ev (fdEvents fdd)
 combineEvents ev fdds = mappend ev (eventsOf fdds)
 {-# INLINE combineEvents #-}
 
-
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
@@ -274,33 +267,33 @@ closeFd mgr fd = do
        )
      case mfds of
        Nothing -> return ()
-       Just fds -> do forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
+       Just fds -> forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
 
 closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
 closeFd_ oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
     (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
-                              return newMap
-
-
+    (Just fds, !newMap) -> do
+      forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
+      return newMap
 
 ------------------------------------------------------------------------
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
-onFdEvent mgr@EventManager{..} fd evs = 
-  if (fd == controlReadFd emControl || fd == wakeupReadFd emControl)
+onFdEvent mgr@EventManager{..} fd evs =
+  if fd == controlReadFd emControl || fd == wakeupReadFd emControl
   then handleControlEvent mgr fd evs
-  else do mcbs <- modifyMVar (emFds ! hashFd fd)
-                   (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of { (mcbs,x) -> (x,mcbs) }))
-          case mcbs of
-            Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb fd evs
-            Nothing  -> return ()
-
+  else do
+    mcbs <- modifyMVar
+              (emFds ! hashFd fd)
+              (\oldMap -> return (case IM.delete (fromIntegral fd) oldMap of
+                                     { (mcbs,x) -> (x,mcbs) }))
+    case mcbs of
+      Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb fd evs
+      Nothing  -> return ()
 #else
-
 
 ------------------------------------------------------------------------
 -- Types
