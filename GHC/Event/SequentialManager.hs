@@ -171,34 +171,48 @@ wakeManager mgr = sendWakeup (emControl mgr)
 eventsOf :: [FdData] -> Event
 eventsOf = mconcat . map fdEvents
 
-#if defined(HAVE_EPOLL)
 ------------------------------------------------------------------------
 -- Types
 
 data FdData = FdData {
-  fdEvents      :: {-# UNPACK #-} !Event
+  fdKey         :: {-# UNPACK #-} !FdKey
+  , fdEvents    :: {-# UNPACK #-} !Event
   , _fdCallback :: !IOCallback
   }
 
-type FdKey = Fd
+data FdKey = FdKey { 
+      keyFd     :: {-# UNPACK #-} !Fd
+    , keyUnique :: {-# UNPACK #-} !Unique
+    } deriving (Eq, Show)
 
 -- | Callback invoked on I/O events.
-type IOCallback = Fd -> Event -> IO ()
+type IOCallback = FdKey -> Event -> IO ()
 
 -- | The event manager state.
 data EventManager = EventManager
     { emBackend :: !Backend
     , emFds     :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
     , emState   :: {-# UNPACK #-} !(IORef State)
+    , emUniqueSource :: {-# UNPACK #-} !UniqueSource
     , emControl :: {-# UNPACK #-} !Control
     }
 
+closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd_ oldMap fd = do
+  case IM.delete (fromIntegral fd) oldMap of
+    (Nothing,  _)       -> return oldMap
+    (Just fds, !newMap) -> do
+      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
+      return newMap
+
+#if defined(HAVE_EPOLL)
 newWith :: Backend -> IO EventManager
 newWith be = do
   fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
   let !iofds = listArray (0, arraySize - 1) fdVars
   ctrl <- newControl
   state <- newIORef Created
+  us <- newSource 
   _ <- mkWeakIORef state $ do
                st <- atomicModifyIORef state $ \s -> (Finished, s)
                when (st /= Finished) $ do
@@ -207,6 +221,7 @@ newWith be = do
   let mgr = EventManager { emBackend = be
                          , emFds = iofds
                          , emState = state
+                         , emUniqueSource = us
                          , emControl = ctrl
                          }
   _ <- registerControlFd mgr (controlReadFd ctrl) evtRead
@@ -226,8 +241,12 @@ registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
 -- manager thread.  
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO ()
 registerFd_ mgr@EventManager{..} cb fd evs = do
+  u <- newUnique emUniqueSource
+  let !reg  = FdKey fd u
+      !fd'  = fromIntegral fd
+      !fdd = FdData reg evs cb
   modifyMVar_ (emFds ! hashFd fd) $ \oldMap ->
-    case IM.insertWith (++) (fromIntegral fd) [FdData evs cb] oldMap of
+    case IM.insertWith (++) fd' [fdd] oldMap of
       (Nothing,   n) -> do
         I.modifyFdOnce emBackend fd evs
         return n
@@ -259,15 +278,7 @@ closeFd mgr fd = do
          (Just fds, !newMap) -> return (newMap, Just fds)
      case mfds of
        Nothing -> return ()
-       Just fds -> forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
-
-closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
-closeFd_ oldMap fd = do
-  case IM.delete (fromIntegral fd) oldMap of
-    (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do
-      forM_ fds $ \(FdData ev cb) -> cb fd (ev `mappend` evtClose)
-      return newMap
+       Just fds -> forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 ------------------------------------------------------------------------
 -- Utilities
@@ -281,7 +292,7 @@ onFdEvent mgr@EventManager{..} fd evs =
             return (case IM.delete (fromIntegral fd) oldMap of
                        (mcbs,x) -> (x,mcbs) )
           case mcbs of
-            Just cbs -> forM_ cbs $ \(FdData _ cb) -> cb fd evs
+            Just cbs -> forM_ cbs $ \(FdData reg _ cb) -> cb reg evs
             Nothing  -> return ()
 
 handleControlEvent :: EventManager -> Fd -> Event -> IO ()
@@ -292,34 +303,6 @@ handleControlEvent mgr fd _evt = do
     CMsgDie         -> writeIORef (emState mgr) Finished
     CMsgSignal fp s -> runHandlers fp s
 #else
-
-------------------------------------------------------------------------
--- Types
-
-data FdData = FdData {
-      fdKey       :: {-# UNPACK #-} !FdKey
-    , fdEvents    :: {-# UNPACK #-} !Event
-    , _fdCallback :: !IOCallback
-    }
-
--- | A file descriptor registration cookie.
-data FdKey = FdKey {
-      keyFd     :: {-# UNPACK #-} !Fd
-    , keyUnique :: {-# UNPACK #-} !Unique
-    } deriving (Eq, Show)
-
--- | Callback invoked on I/O events.
-type IOCallback = FdKey -> Event -> IO ()
-
--- | The event manager state.
-data EventManager = EventManager
-    { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
-    , emState        :: {-# UNPACK #-} !(IORef State)
-    , emUniqueSource :: {-# UNPACK #-} !UniqueSource      
-    , emControl      :: {-# UNPACK #-} !Control
-    }
-
 ------------------------------------------------------------------------
 -- Creation
 
@@ -434,7 +417,6 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
      when modify $ I.modifyFd emBackend fd oldEvs newEvs
      return modify
 
-
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
 unregisterFd mgr reg = do
@@ -456,14 +438,6 @@ closeFd mgr fd = do
        Just fds -> do
          wakeManager mgr
          forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
-
-closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
-closeFd_ oldMap fd = do
-  case IM.delete (fromIntegral fd) oldMap of
-    (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do
-      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
-      return newMap
 
 ------------------------------------------------------------------------
 -- Utilities
