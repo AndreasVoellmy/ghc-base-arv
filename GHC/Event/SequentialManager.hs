@@ -205,6 +205,14 @@ closeFd_ oldMap fd = do
       forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
       return newMap
 
+handleControlEvent :: EventManager -> Fd -> Event -> IO ()
+handleControlEvent mgr fd _evt = do
+  msg <- readControlMessage (emControl mgr) fd
+  case msg of
+    CMsgWakeup      -> return ()
+    CMsgDie         -> writeIORef (emState mgr) Finished
+    CMsgSignal fp s -> runHandlers fp s
+
 #if defined(HAVE_EPOLL)
 newWith :: Backend -> IO EventManager
 newWith be = do
@@ -278,7 +286,9 @@ closeFd mgr fd = do
          (Just fds, !newMap) -> return (newMap, Just fds)
      case mfds of
        Nothing -> return ()
-       Just fds -> forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
+       Just fds ->
+         forM_ fds $ \(FdData reg ev cb) ->
+         cb reg (ev `mappend` evtClose)
 
 ------------------------------------------------------------------------
 -- Utilities
@@ -295,25 +305,9 @@ onFdEvent mgr@EventManager{..} fd evs =
             Just cbs -> forM_ cbs $ \(FdData reg _ cb) -> cb reg evs
             Nothing  -> return ()
 
-handleControlEvent :: EventManager -> Fd -> Event -> IO ()
-handleControlEvent mgr fd _evt = do
-  msg <- readControlMessage (emControl mgr) fd
-  case msg of
-    CMsgWakeup      -> return ()
-    CMsgDie         -> writeIORef (emState mgr) Finished
-    CMsgSignal fp s -> runHandlers fp s
 #else
 ------------------------------------------------------------------------
 -- Creation
-
-handleControlEvent :: EventManager -> FdKey -> Event -> IO ()
-handleControlEvent mgr reg _evt = do
-  msg <- readControlMessage (emControl mgr) (keyFd reg)
-  case msg of
-    CMsgWakeup      -> return ()
-    CMsgDie         -> writeIORef (emState mgr) Finished
-    CMsgSignal fp s -> runHandlers fp s
-
 newWith :: Backend -> IO EventManager
 newWith be = do
   fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
@@ -333,9 +327,9 @@ newWith be = do
                          , emControl = ctrl
                          }
   _ <- registerFdPersistent_
-         mgr (handleControlEvent mgr) (controlReadFd ctrl) evtRead
+       mgr (handleControlEvent mgr . keyFd) (controlReadFd ctrl) evtRead
   _ <- registerFdPersistent_
-         mgr (handleControlEvent mgr) (wakeupReadFd ctrl) evtRead
+       mgr (handleControlEvent mgr . keyFd) (wakeupReadFd ctrl) evtRead
   return mgr
 
 ------------------------------------------------------------------------
