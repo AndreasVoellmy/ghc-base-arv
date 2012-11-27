@@ -43,15 +43,16 @@ module GHC.Event.SequentialManager
 
 ------------------------------------------------------------------------
 -- Imports
-
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar,
                                 readMVar)
 import Control.Exception (finally)
-import Control.Monad ((=<<), forM_, liftM, sequence, sequence_, when)
+import Control.Monad ((=<<), forM_, liftM, sequence, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (mappend, mconcat, mempty)
+import Data.Tuple (snd)
+import GHC.Arr (Array, (!), listArray)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
 import GHC.Conc.Sync (yield)
@@ -59,15 +60,14 @@ import GHC.List (filter, replicate)
 import GHC.Num (Num(..))
 import GHC.Real (fromIntegral, mod)
 import GHC.Show (Show(..))
-import GHC.Event.Clock (getCurrentTime)
 import GHC.Event.Control
 import GHC.Event.Internal (Backend, Event, evtClose, evtRead, evtWrite,
                            Timeout(..))
-import System.Posix.Types (Fd)
-import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
-import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
-import GHC.Arr
+import qualified GHC.Event.IntMap as IM
+import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
+import System.Posix.Types (Fd)
+
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
@@ -232,8 +232,8 @@ newWith be = do
                          , emUniqueSource = us
                          , emControl = ctrl
                          }
-  _ <- registerControlFd mgr (controlReadFd ctrl) evtRead
-  _ <- registerControlFd mgr (wakeupReadFd ctrl) evtRead
+  registerControlFd mgr (controlReadFd ctrl) evtRead
+  registerControlFd mgr (wakeupReadFd ctrl) evtRead
   return mgr
 
 ------------------------------------------------------------------------
@@ -267,9 +267,7 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
 -- on the file descriptor @fd@.  @cb@ is called for each event that
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
 registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO ()
-registerFd mgr cb fd evs = do
-  registerFd_ mgr cb fd evs
-  wakeManager mgr
+registerFd = registerFd_ 
 {-# INLINE registerFd #-}
 
 combineEvents :: Event -> [FdData] -> Event
@@ -294,17 +292,29 @@ closeFd mgr fd = do
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
+-- Combines invoking the callback and removing callbacks.       
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs =
   if fd == controlReadFd emControl || fd == wakeupReadFd emControl
   then handleControlEvent mgr fd evs
-  else do mcbs <- modifyMVar (emFds ! hashFd fd) $ \oldMap ->
-            return (case IM.delete (fromIntegral fd) oldMap of
-                       (mcbs,x) -> (x,mcbs) )
-          case mcbs of
-            Just cbs -> forM_ cbs $ \(FdData reg _ cb) -> cb reg evs
-            Nothing  -> return ()
-
+  else do fdds <- modifyMVar (emFds ! hashFd fd) $ \oldMap ->
+            case IM.delete (fromIntegral fd) oldMap of
+                    (Nothing, _) -> return (oldMap, [])
+                    (Just cbs, newmap) -> selectCallbacks newmap cbs
+          forM_ fdds $ \(FdData reg _ cb) -> cb reg evs
+  where
+    fd' :: Int
+    fd' = fromIntegral fd
+    selectCallbacks ::
+      IM.IntMap [FdData] -> [FdData] -> IO (IM.IntMap [FdData], [FdData])
+    selectCallbacks curmap cbs = loop cbs [] []
+      where 
+        loop [] fdds []     = return (curmap,cbs)
+        loop [] fdds saved =
+          return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
+        loop (fdd@(FdData reg evs' cb) : cbs') fdds saved
+          | evs `I.eventIs` evs' = loop cbs' (fdd:fdds) saved
+          | otherwise            = loop cbs' fdds (fdd:saved) 
 #else
 ------------------------------------------------------------------------
 -- Creation
@@ -410,6 +420,7 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
      let !modify = oldEvs /= newEvs
      when modify $ I.modifyFd emBackend fd oldEvs newEvs
      return modify
+
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
