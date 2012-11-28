@@ -171,11 +171,10 @@ pollNonBlock ep f = do
   -- we just return (and try again later.)
   n <- A.unsafeLoad events $ \es cap ->
        epollWaitUnsafe (epollFd ep) es cap 0
-  if n > 0
-    then do A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
-            cap <- A.capacity events
-            when (cap == n) $ A.ensureCapacity events (2 * cap)
-    else return ()
+  when (n > 0) $ do
+    A.forM_ events $ \e -> f (eventFd e) (toEvent (eventTypes e))
+    cap <- A.capacity events
+    when (cap == n) $ A.ensureCapacity events (2 * cap)
   return n
 
 newtype EPollFd = EPollFd {
@@ -254,7 +253,7 @@ epollWait (EPollFd epfd) events numEvents timeout =
 epollWaitUnsafe :: EPollFd -> Ptr Event -> Int -> Int -> IO Int
 epollWaitUnsafe (EPollFd epfd) events numEvents timeout =
     fmap fromIntegral .
-    E.throwErrnoIfMinus1NoRetry "epollWait" $
+    E.throwErrnoIfMinus1NoRetry "epollWaitUnsafe" $
     c_epoll_wait_unsafe
       epfd
       events
