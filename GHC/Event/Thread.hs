@@ -19,6 +19,7 @@ module GHC.Event.Thread (
 import qualified GHC.Arr as A
 import GHC.Base
 import Data.Maybe (Maybe(..))
+import Data.Tuple (snd)
 import System.Posix.Types (Fd)
 import GHC.Conc.Sync (forkIO, forkOn)
 import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
@@ -179,31 +180,34 @@ threadWaitWrite = threadWait SM.evtWrite
 {-# INLINE threadWaitWrite #-}
 
 {-
-closeFdWith is somewhat complicated. It performs the following actions
-(order is important here):
+closeFdWith is more complicated with a parallel IO backend, because
+callbacks for a single fd may be registered with several IO managers. Hence,
+we need to close the fd with each capability's IO manager.
+The function performs the following actions (order is important here):
 (a) grab tables (and hence locks, always in ascending order from 0..n-1);
 (b) close the fd;
-(c) delete callbacks, call them, and put the updated table into the table
-variables;
-TODO: Harden this: what happens if there is an exception (synchronous or
-asynchronous)? Need to restore the locks properly.
+(c) delete callbacks, delete fd from backend, call callbacks,
+and finally put the updated table into the table variables;
 -}
 closeFdWith :: (Fd -> IO ())        -- ^ Action that performs the close.
             -> Fd                   -- ^ File descriptor to close.
             -> IO ()
 closeFdWith close fd = do 
   tableVars <- forM [0,1..numCapabilities-1] (getCallbackTableVar fd)
-  tables    <- forM tableVars takeMVar
-  close fd
-  zipWithM_
-    (\tableVar table -> SM.closeFd_ table fd >>= putMVar tableVar)
-    tableVars
-    tables
+  mask_ $ do
+    tables <- forM tableVars (takeMVar.snd)
+    close fd
+    zipWithM_
+      (\(mgr,tableVar) table -> SM.closeFd_ mgr table fd >>= putMVar tableVar)
+      tableVars
+      tables
 
-getCallbackTableVar :: Fd -> Int -> IO (MVar (IM.IntMap [SM.FdData]))
+getCallbackTableVar :: Fd
+                       -> Int
+                       -> IO (SM.EventManager, MVar (IM.IntMap [SM.FdData]))
 getCallbackTableVar fd cap = 
   do Just (_,!mgr) <- readIOArray eventManagerRef cap
-     return (SM.callbackTableVar mgr fd)
+     return (mgr, SM.callbackTableVar mgr fd)
   
 threadDelay :: Int -> IO ()
 threadDelay usecs = mask_ $ do

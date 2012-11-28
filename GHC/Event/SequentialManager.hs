@@ -68,7 +68,6 @@ import qualified GHC.Event.IntMap as IM
 import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import System.Posix.Types (Fd)
 
-
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
 #elif defined(HAVE_EPOLL)
@@ -204,17 +203,28 @@ callbackTableVar mgr fd = emFds mgr ! hashFd fd
 eventsOf :: [FdData] -> Event
 eventsOf = mconcat . map fdEvents
 
-closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
-closeFd_ oldMap fd = do
-  case IM.delete (fromIntegral fd) oldMap of
-    (Nothing,  _)       -> return oldMap
-    (Just fds, !newMap) -> do
-      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
-      return newMap
-
 nullToNothing :: [a] -> Maybe [a]
 nullToNothing []       = Nothing
 nullToNothing xs@(_:_) = Just xs
+
+-- | Register interest in the given events, without waking the event
+-- manager thread.  The 'Bool' return value indicates whether the
+-- event manager ought to be woken.
+registerControlFd :: EventManager -> Fd -> Event -> IO ()
+registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
+
+-- | Does everything that closeFd does, except for updating the callback tables.
+-- It assumes the caller will update the callback tables and that the caller
+-- holds the callback table lock for the fd. 
+closeFd_ :: EventManager -> IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd_ mgr oldMap fd = do
+  case IM.delete (fromIntegral fd) oldMap of
+    (Nothing,  _)       -> return oldMap
+    (Just fds, !newMap) -> do
+      let oldEvs = eventsOf fds
+      I.modifyFd (emBackend mgr) fd oldEvs mempty
+      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
+      return newMap
 
 #if defined(HAVE_EPOLL)
 newWith :: Backend -> IO EventManager
@@ -241,12 +251,6 @@ newWith be = do
 
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
-
--- | Register interest in the given events, without waking the event
--- manager thread.  The 'Bool' return value indicates whether the
--- event manager ought to be woken.
-registerControlFd :: EventManager -> Fd -> Event -> IO ()
-registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.  
@@ -286,14 +290,19 @@ closeFd mgr fd = do
          (Just fds, !newMap) -> return (newMap, Just fds)
      case mfds of
        Nothing -> return ()
-       Just fds ->
+       Just fds -> do
+         let oldEvs = eventsOf fds
+         I.modifyFd (emBackend mgr) fd oldEvs mempty
          forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 ------------------------------------------------------------------------
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
--- Combines invoking the callback and removing callbacks.       
+-- Combines invoking the callback and removing callbacks.  Note that
+-- with the ONESHOT backends the callback does not perform the deregistration
+-- with the backend, and hence does not need to be holding the callback table
+-- lock.         
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs =
   if fd == controlReadFd emControl || fd == wakeupReadFd emControl
@@ -354,10 +363,8 @@ newWith be = do
                          , emUniqueSource = us
                          , emControl = ctrl
                          }
-  _ <- registerFdPersistent_
-       mgr (handleControlEvent mgr . keyFd) (controlReadFd ctrl) evtRead
-  _ <- registerFdPersistent_
-       mgr (handleControlEvent mgr . keyFd) (wakeupReadFd ctrl) evtRead
+  registerControlFd mgr (controlReadFd ctrl) evtRead
+  registerControlFd mgr (wakeupReadFd ctrl) evtRead
   return mgr
 
 ------------------------------------------------------------------------
@@ -366,9 +373,9 @@ newWith be = do
 -- | Register interest in the given events, without waking the event
 -- manager thread.  The 'Bool' return value indicates whether the
 -- event manager ought to be woken.
-registerFdPersistent_ :: EventManager -> IOCallback -> Fd -> Event
+registerFd_ :: EventManager -> IOCallback -> Fd -> Event
                          -> IO (FdKey, Bool)
-registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
+registerFd_ mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
@@ -382,16 +389,6 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
     in do when modify $ I.modifyFd emBackend fd oldEvs newEvs
           return (newMap, modify)
   return (reg, modify)
-{-# INLINE registerFdPersistent_ #-}
-
--- | Register interest in the given events, without waking the event
--- manager thread.  The 'Bool' return value indicates whether the
--- event manager ought to be woken.
-registerFd_ :: EventManager -> IOCallback -> Fd -> Event
-            -> IO (FdKey, Bool)
-registerFd_ mgr cb fd evs =
-  let cb' reg ev = unregisterFd_ mgr reg >> cb reg ev
-  in registerFdPersistent_ mgr cb' fd evs
 {-# INLINE registerFd_ #-}
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
@@ -420,17 +417,16 @@ pairEvents prev m fd = let l = eventsOf prev
 -- manager ought to be woken.
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
-  do (oldEvs, newEvs) <- modifyMVar (emFds ! hashFd fd) $ \oldMap ->
-       let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
-           fd'     = fromIntegral fd
-           (!newMap, (oldEvs, newEvs)) =
-             case IM.updateWith dropReg fd' oldMap of
-               (Nothing,   _)    -> (oldMap, (mempty, mempty))
-               (Just prev, newm) -> (newm, pairEvents prev newm fd')
-       in return (newMap, (oldEvs, newEvs))
-     let !modify = oldEvs /= newEvs
-     when modify $ I.modifyFd emBackend fd oldEvs newEvs
-     return modify
+  modifyMVar (emFds ! hashFd fd) $ \oldMap -> do
+    let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
+        fd'     = fromIntegral fd
+        (!newMap, (oldEvs, newEvs)) =
+          case IM.updateWith dropReg fd' oldMap of
+            (Nothing,   _)    -> (oldMap, (mempty, mempty))
+            (Just prev, newm) -> (newm, pairEvents prev newm fd')
+        !modify = oldEvs /= newEvs
+    when modify $ I.modifyFd emBackend fd oldEvs newEvs
+    return (newMap, modify)
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
@@ -441,25 +437,21 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
-  do mfds <- modifyMVar (emFds mgr ! hashFd fd) $ \oldMap ->
-       case IM.delete (fromIntegral fd) oldMap of
-         (Nothing,  _)       -> return (oldMap, Nothing)
-         (Just fds, !newMap) -> return (newMap, Just fds)
-     case mfds of
-       Nothing -> return ()
-       Just fds -> do
-         wakeManager mgr
-         forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
+  modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd 
+  wakeManager mgr
 
 ------------------------------------------------------------------------
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
-onFdEvent mgr fd evs = do
-  fdMap <- readMVar (emFds mgr ! hashFd fd)
-  case IM.lookup (fromIntegral fd) fdMap of
-      Just cbs -> forM_ cbs $ \(FdData reg ev cb) ->
-                       when (evs `I.eventIs` ev) (cb reg evs)
-      Nothing  -> return ()
+onFdEvent mgr fd evs =
+  if fd == controlReadFd emControl || fd == wakeupReadFd emControl
+  then handleControlEvent mgr fd evs
+  else do fdMap <- readMVar (emFds mgr ! hashFd fd)
+          case IM.lookup (fromIntegral fd) fdMap of
+            Just cbs ->
+              forM_ cbs $ \(FdData reg ev cb) ->
+              when (evs `I.eventIs` ev) (unregisterFd_ mgr reg >> cb reg evs)
+            Nothing  -> return ()
 #endif
