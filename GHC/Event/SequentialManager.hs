@@ -23,7 +23,6 @@ module GHC.Event.SequentialManager
     , step
     , shutdown
     , cleanup
-    , wakeManager
 
       -- * Registering interest in I/O events
     , Event
@@ -80,21 +79,48 @@ import qualified GHC.Event.Poll   as Poll
 # error not implemented for this operating system
 #endif
 
-arraySize :: Int
-arraySize = 32
+------------------------------------------------------------------------
+-- Types
 
-hashFd :: Fd -> Int
-hashFd fd = fromIntegral fd `mod` arraySize
-{-# INLINE hashFd #-}
+data FdData = FdData {
+  fdKey         :: {-# UNPACK #-} !FdKey
+  , fdEvents    :: {-# UNPACK #-} !Event
+  , _fdCallback :: !IOCallback
+  }
 
-callbackTableVar :: EventManager -> Fd -> MVar (IM.IntMap [FdData])
-callbackTableVar mgr fd = emFds mgr ! hashFd fd
+data FdKey = FdKey { 
+      keyFd     :: {-# UNPACK #-} !Fd
+    , keyUnique :: {-# UNPACK #-} !Unique
+    } deriving (Eq, Show)
+
+-- | Callback invoked on I/O events.
+type IOCallback = FdKey -> Event -> IO ()
 
 data State = Created
            | Running
            | Dying
            | Finished
              deriving (Eq, Show)
+
+-- | The event manager state.
+data EventManager = EventManager
+    { emBackend      :: !Backend
+    , emFds          :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
+    , emState        :: {-# UNPACK #-} !(IORef State)
+    , emUniqueSource :: {-# UNPACK #-} !UniqueSource
+    , emControl      :: {-# UNPACK #-} !Control
+    }
+
+------------------------------------------------------------------------
+-- Creation
+
+handleControlEvent :: EventManager -> Fd -> Event -> IO ()
+handleControlEvent mgr fd _evt = do
+  msg <- readControlMessage (emControl mgr) fd
+  case msg of
+    CMsgWakeup      -> return ()
+    CMsgDie         -> writeIORef (emState mgr) Finished
+    CMsgSignal fp s -> runHandlers fp s
 
 newDefaultBackend :: IO Backend
 #if defined(HAVE_KQUEUE)
@@ -165,38 +191,18 @@ step mgr@EventManager{..} = do
                                return ())
                      )
 
--- | Wake up the event manager.
-wakeManager :: EventManager -> IO ()
-wakeManager mgr = sendWakeup (emControl mgr)
+arraySize :: Int
+arraySize = 32
+
+hashFd :: Fd -> Int
+hashFd fd = fromIntegral fd `mod` arraySize
+{-# INLINE hashFd #-}
+
+callbackTableVar :: EventManager -> Fd -> MVar (IM.IntMap [FdData])
+callbackTableVar mgr fd = emFds mgr ! hashFd fd
 
 eventsOf :: [FdData] -> Event
 eventsOf = mconcat . map fdEvents
-
-------------------------------------------------------------------------
--- Types
-
-data FdData = FdData {
-  fdKey         :: {-# UNPACK #-} !FdKey
-  , fdEvents    :: {-# UNPACK #-} !Event
-  , _fdCallback :: !IOCallback
-  }
-
-data FdKey = FdKey { 
-      keyFd     :: {-# UNPACK #-} !Fd
-    , keyUnique :: {-# UNPACK #-} !Unique
-    } deriving (Eq, Show)
-
--- | Callback invoked on I/O events.
-type IOCallback = FdKey -> Event -> IO ()
-
--- | The event manager state.
-data EventManager = EventManager
-    { emBackend :: !Backend
-    , emFds     :: {-# UNPACK #-} !(Array Int (MVar (IM.IntMap [FdData])))
-    , emState   :: {-# UNPACK #-} !(IORef State)
-    , emUniqueSource :: {-# UNPACK #-} !UniqueSource
-    , emControl :: {-# UNPACK #-} !Control
-    }
 
 closeFd_ :: IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
 closeFd_ oldMap fd = do
@@ -205,14 +211,6 @@ closeFd_ oldMap fd = do
     (Just fds, !newMap) -> do
       forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
       return newMap
-
-handleControlEvent :: EventManager -> Fd -> Event -> IO ()
-handleControlEvent mgr fd _evt = do
-  msg <- readControlMessage (emControl mgr) fd
-  case msg of
-    CMsgWakeup      -> return ()
-    CMsgDie         -> writeIORef (emState mgr) Finished
-    CMsgSignal fp s -> runHandlers fp s
 
 nullToNothing :: [a] -> Maybe [a]
 nullToNothing []       = Nothing
@@ -334,12 +332,10 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
-unregisterFd mgr reg = do
-  unregisterFd_ mgr reg
-  return ()
+unregisterFd mgr reg
+  = do unregisterFd_ mgr reg
+       return ()
 #else
-------------------------------------------------------------------------
--- Creation
 newWith :: Backend -> IO EventManager
 newWith be = do
   fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
@@ -376,7 +372,7 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
-      !fdd = FdData reg evs cb
+      !fdd  = FdData reg evs cb
   modify <- modifyMVar (emFds ! hashFd fd) $ \oldMap -> 
     let (!newMap, (oldEvs, newEvs)) =
           case IM.insertWith (++) fd' [fdd] oldMap of
@@ -394,11 +390,8 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event
             -> IO (FdKey, Bool)
 registerFd_ mgr cb fd evs =
-  registerFdPersistent_
-    mgr
-    (\reg ev -> unregisterFd_ mgr reg >> cb reg ev)
-    fd
-    evs
+  let cb' reg ev = unregisterFd_ mgr reg >> cb reg ev
+  in registerFdPersistent_ mgr cb' fd evs
 {-# INLINE registerFd_ #-}
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
@@ -410,6 +403,10 @@ registerFd mgr cb fd evs = do
   when wake $ wakeManager mgr
   return r
 {-# INLINE registerFd #-}
+
+-- | Wake up the event manager.
+wakeManager :: EventManager -> IO ()
+wakeManager mgr = sendWakeup (emControl mgr)
 
 pairEvents :: [FdData] -> IM.IntMap [FdData] -> Int -> (Event, Event)
 pairEvents prev m fd = let l = eventsOf prev
@@ -466,8 +463,3 @@ onFdEvent mgr fd evs = do
                        when (evs `I.eventIs` ev) (cb reg evs)
       Nothing  -> return ()
 #endif
-
-
-
-
-
