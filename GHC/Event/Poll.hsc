@@ -59,11 +59,6 @@ new =
   E.backend poll pollNonBlock modifyFd modifyFdOnce (\_ -> return ()) `liftM`
   liftM2 Poll (newMVar =<< A.empty) A.empty
 
-pollNonBlock :: Poll                     -- ^ state
-               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
-               -> IO Int
-pollNonBlock = error "pollNonBlock not yet defined"
-
 modifyFdOnce :: Poll -> Fd -> E.Event -> IO ()
 modifyFdOnce = error "modifyFdOnce not yet defined"
 
@@ -85,16 +80,19 @@ reworkFd p (PollFd fd npevt opevt) = do
           | npevt /= 0 -> A.unsafeWrite ary i $ PollFd fd npevt 0
           | otherwise  -> A.removeAt ary i
 
-poll :: Poll
-     -> E.Timeout
-     -> (Fd -> E.Event -> IO ())
-     -> IO Int
-poll p tout f = do
+pollWith :: (Ptr PollFd -> CULong -> CInt -> IO CInt)
+            -> String
+            -> Poll
+            -> CInt
+            -> (Fd -> E.Event -> IO ())
+            -> IO Int
+pollWith c_poll_fun c_poll_fun_name p tout f = do
   let a = pollFd p
   mods <- swapMVar (pollChanges p) =<< A.empty
   A.forM_ mods (reworkFd p)
-  n <- A.useAsPtr a $ \ptr len -> E.throwErrnoIfMinus1NoRetry "c_poll" $
-         c_poll ptr (fromIntegral len) (fromIntegral (fromTimeout tout))
+  n <- A.useAsPtr a $ \ptr len ->
+    E.throwErrnoIfMinus1NoRetry c_poll_fun_name $
+    c_poll_fun ptr (fromIntegral len) tout
   unless (n == 0) $ do
     A.loop a 0 $ \i e -> do
       let r = pfdRevents e
@@ -104,6 +102,12 @@ poll p tout f = do
                 return (i', i' == n)
         else return (i, True)
   return (fromIntegral n)
+
+poll :: Poll -> E.Timeout -> (Fd -> E.Event -> IO ())-> IO Int
+poll p tout f = pollWith c_poll "c_poll" p (fromIntegral (fromTimeout tout)) f
+
+pollNonBlock :: Poll -> (Fd -> E.Event -> IO ()) -> IO Int
+pollNonBlock p f = pollWith c_poll_unsafe "c_poll_unsafe" p 0 f
 
 fromTimeout :: E.Timeout -> Int
 fromTimeout E.Forever     = -1
@@ -170,4 +174,6 @@ instance Storable PollFd where
 foreign import ccall safe "poll.h poll"
     c_poll :: Ptr PollFd -> CULong -> CInt -> IO CInt
 
+foreign import ccall unsafe "poll.h poll"
+    c_poll_unsafe :: Ptr PollFd -> CULong -> CInt -> IO CInt
 #endif /* defined(HAVE_POLL_H) */
