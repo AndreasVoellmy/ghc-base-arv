@@ -38,8 +38,8 @@ module GHC.Conc.IO
         , registerDelay         -- :: Int -> IO (TVar Bool)
         , threadWaitRead        -- :: Int -> IO ()
         , threadWaitWrite       -- :: Int -> IO ()
-        , threadWaitReadSTM     -- :: Int -> IO ()
-        , threadWaitWriteSTM    -- :: Int -> IO ()
+        , threadWaitReadSTM     -- :: Int -> IO (STM (), IO ())
+        , threadWaitWriteSTM    -- :: Int -> IO IO (STM (), IO ())
         , closeFdWith           -- :: (Fd -> IO ()) -> Fd -> IO ()
 
 #ifdef mingw32_HOST_OS
@@ -112,13 +112,13 @@ threadWaitWrite fd
 
 -- | Returns an STM action that can be used to block until
 -- data can be written to the given file descriptor (GHC only).
-threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM :: Fd ->IO (STM (), IO ())
 threadWaitReadSTM fd
   | threaded  = Event.threadWaitReadSTM fd
 
 -- | Returns an STM action that can be used to block until
 -- data is available to read on the given file descriptor (GHC only).
-threadWaitWriteSTM :: Fd ->IO (STM ())
+threadWaitWriteSTM :: Fd -> IO (STM (), IO ())
 threadWaitWriteSTM fd
   | threaded  = Event.threadWaitWriteSTM fd
 

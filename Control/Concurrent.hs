@@ -61,8 +61,8 @@ module Control.Concurrent (
         threadDelay,            -- :: Int -> IO ()
         threadWaitRead,         -- :: Int -> IO ()
         threadWaitWrite,        -- :: Int -> IO ()
-        threadWaitReadSTM, 
-        threadWaitWriteSTM,
+        threadWaitReadSTM,      -- :: Int -> IO (STM (), IO ())
+        threadWaitWriteSTM,     -- :: Int -> IO (STM (), IO ())
 #endif
 
         -- * Communication abstractions
@@ -510,11 +510,11 @@ threadWaitWrite fd
 #endif
 
 
-threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM :: Fd -> IO (STM (), IO ())
 threadWaitReadSTM fd
   = GHC.Conc.threadWaitReadSTM fd 
 
-threadWaitWriteSTM :: Fd -> IO (STM ())
+threadWaitWriteSTM :: Fd -> IO (STM (), IO ())
 threadWaitWriteSTM fd 
   = GHC.Conc.threadWaitWriteSTM fd
 

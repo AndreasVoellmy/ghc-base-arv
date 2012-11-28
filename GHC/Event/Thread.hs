@@ -32,7 +32,7 @@ import Data.IORef
 import GHC.Conc.Sync
 import System.IO.Unsafe
 import GHC.List (replicate, head)
-import Control.Monad (sequence, sequence_, forM, zipWithM_)
+import Control.Monad (sequence, sequence_, forM, zipWithM_, when)
 import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
@@ -136,25 +136,27 @@ ensureIOManagerIsRunning
                   labelThread t "IOManager"
                   writeIOArray eventManagerRef i (Just (t,mgr))
        
-threadWaitSTM :: NE.Event -> Fd -> IO (STM ())
+threadWaitSTM :: NE.Event -> Fd -> IO (STM (), IO ())
 threadWaitSTM evt fd = mask_ $ do
   m <- newTVarIO Nothing
   !mgr <- getSystemEventManager 
-  SM.registerFd_ mgr (\fd evt -> atomically (writeTVar m (Just evt))) fd evt
-  return (do mevt <- readTVar m
-             case mevt of
-               Nothing -> retry
-               Just evt -> 
-                 if evt `E.eventIs` E.evtClose
-                 then throwSTM $ errnoToIOError "threadWait" eBADF Nothing Nothing
-                 else return ()
-         )
+  reg <- SM.registerFd
+           mgr (\fd evt -> atomically $ writeTVar m (Just evt)) fd evt
+  let waitAction = do
+        mevt <- readTVar m
+        case mevt of
+          Nothing -> retry
+          Just evt -> 
+            when (evt `E.eventIs` E.evtClose)
+                 (throwSTM $ errnoToIOError "threadWait" eBADF Nothing Nothing)
+  let closeAction = SM.unregisterFd_ mgr reg >> return ()        
+  return (waitAction, closeAction)
 
-threadWaitReadSTM :: Fd -> IO (STM ())
+threadWaitReadSTM :: Fd -> IO (STM (), IO ())
 threadWaitReadSTM = threadWaitSTM SM.evtRead
 {-# INLINE threadWaitReadSTM #-}
 
-threadWaitWriteSTM :: Fd -> IO (STM ())
+threadWaitWriteSTM :: Fd -> IO (STM (), IO ())
 threadWaitWriteSTM = threadWaitSTM SM.evtWrite
 {-# INLINE threadWaitWriteSTM #-}
 
@@ -162,8 +164,8 @@ threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
   !mgr <- getSystemEventManager 
-  SM.registerFd_ mgr (\fd evt -> putMVar m evt) fd evt
-  evt' <- takeMVar m 
+  reg <- SM.registerFd mgr (\fd evt -> putMVar m evt) fd evt
+  evt' <- takeMVar m `onException` SM.unregisterFd_ mgr reg
   if evt' `E.eventIs` E.evtClose
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
     else return ()

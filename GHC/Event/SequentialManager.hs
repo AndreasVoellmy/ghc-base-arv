@@ -31,8 +31,9 @@ module GHC.Event.SequentialManager
     , evtWrite
     , IOCallback
     , FdKey
-    , registerFd_
     , registerFd
+    , unregisterFd_
+    , unregisterFd
     , closeFd
     , closeFd_
     , callbackTableVar
@@ -213,6 +214,10 @@ handleControlEvent mgr fd _evt = do
     CMsgDie         -> writeIORef (emState mgr) Finished
     CMsgSignal fp s -> runHandlers fp s
 
+nullToNothing :: [a] -> Maybe [a]
+nullToNothing []       = Nothing
+nullToNothing xs@(_:_) = Just xs
+
 #if defined(HAVE_EPOLL)
 newWith :: Backend -> IO EventManager
 newWith be = do
@@ -247,27 +252,26 @@ registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.  
-registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO ()
+registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
 registerFd_ mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
-  let !reg  = FdKey fd u
-      !fd'  = fromIntegral fd
+  let !reg = FdKey fd u
+      !fd' = fromIntegral fd
       !fdd = FdData reg evs cb
   modifyMVar_ (emFds ! hashFd fd) $ \oldMap ->
     case IM.insertWith (++) fd' [fdd] oldMap of
-      (Nothing,   n) -> do
-        I.modifyFdOnce emBackend fd evs
-        return n
-      (Just prev, n) -> do
-        I.modifyFdOnce emBackend fd (combineEvents evs prev) 
-        return n
+      (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
+                           return n
+      (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev) 
+                           return n
+  return reg
 {-# INLINE registerFd_ #-}
 
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO ()
-registerFd = registerFd_ 
+registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
+registerFd = registerFd_
 {-# INLINE registerFd #-}
 
 combineEvents :: Event -> [FdData] -> Event
@@ -285,8 +289,7 @@ closeFd mgr fd = do
      case mfds of
        Nothing -> return ()
        Just fds ->
-         forM_ fds $ \(FdData reg ev cb) ->
-         cb reg (ev `mappend` evtClose)
+         forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 ------------------------------------------------------------------------
 -- Utilities
@@ -314,7 +317,26 @@ onFdEvent mgr@EventManager{..} fd evs =
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
         loop (fdd@(FdData reg evs' cb) : cbs') fdds saved
           | evs `I.eventIs` evs' = loop cbs' (fdd:fdds) saved
-          | otherwise            = loop cbs' fdds (fdd:saved) 
+          | otherwise            = loop cbs' fdds (fdd:saved)
+
+-- | Drop a previous file descriptor registration, without waking the
+-- event manager thread.  The return value indicates whether the event
+-- manager ought to be woken.
+unregisterFd_ :: EventManager -> FdKey -> IO Bool
+unregisterFd_ EventManager{..} (FdKey fd u) =
+  do modifyMVar_ (emFds ! hashFd fd) $ \oldMap ->
+       let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
+           fd'     = fromIntegral fd
+       in case IM.updateWith dropReg fd' oldMap of
+         (Nothing,   _)    -> return oldMap
+         (Just prev, newm) -> return newm
+     return False
+
+-- | Drop a previous file descriptor registration.
+unregisterFd :: EventManager -> FdKey -> IO ()
+unregisterFd mgr reg = do
+  unregisterFd_ mgr reg
+  return ()
 #else
 ------------------------------------------------------------------------
 -- Creation
@@ -355,17 +377,14 @@ registerFdPersistent_ mgr@EventManager{..} cb fd evs = do
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
       !fdd = FdData reg evs cb
-  modify <- 
-    modifyMVar (emFds ! hashFd fd)
-     (\oldMap -> 
-       let (!newMap, (oldEvs, newEvs)) =
-             case IM.insertWith (++) fd' [fdd] oldMap of
-               (Nothing,   n) -> (n, (mempty, evs))
-               (Just prev, n) -> (n, pairEvents prev newMap fd')
-           !modify = oldEvs /= newEvs               
-       in do when modify $ I.modifyFd emBackend fd oldEvs newEvs
-             return (newMap, modify)
-     )
+  modify <- modifyMVar (emFds ! hashFd fd) $ \oldMap -> 
+    let (!newMap, (oldEvs, newEvs)) =
+          case IM.insertWith (++) fd' [fdd] oldMap of
+            (Nothing,   n) -> (n, (mempty, evs))
+            (Just prev, n) -> (n, pairEvents prev newMap fd')
+        !modify = oldEvs /= newEvs               
+    in do when modify $ I.modifyFd emBackend fd oldEvs newEvs
+          return (newMap, modify)
   return (reg, modify)
 {-# INLINE registerFdPersistent_ #-}
 
@@ -385,11 +404,11 @@ registerFd_ mgr cb fd evs =
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO ()
+registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
 registerFd mgr cb fd evs = do
-  (_,wake) <- registerFd_ mgr cb fd evs
+  (r,wake) <- registerFd_ mgr cb fd evs
   when wake $ wakeManager mgr
-  return ()
+  return r
 {-# INLINE registerFd #-}
 
 pairEvents :: [FdData] -> IM.IntMap [FdData] -> Int -> (Event, Event)
@@ -404,23 +423,17 @@ pairEvents prev m fd = let l = eventsOf prev
 -- manager ought to be woken.
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
-  do (oldEvs, newEvs) <- 
-       modifyMVar (emFds ! hashFd fd)
-       (\oldMap -> 
-         let dropReg cbs = case filter ((/= u) . keyUnique . fdKey) cbs of
-                               []   -> Nothing
-                               cbs' -> Just cbs'
-             fd' = fromIntegral fd
-             (!newMap, (oldEvs, newEvs)) =
-               case IM.updateWith dropReg fd' oldMap of
-                 (Nothing,   _)    -> (oldMap, (mempty, mempty))
-                 (Just prev, newm) -> (newm, pairEvents prev newm fd')
-         in return (newMap, (oldEvs, newEvs))
-       )
+  do (oldEvs, newEvs) <- modifyMVar (emFds ! hashFd fd) $ \oldMap ->
+       let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
+           fd'     = fromIntegral fd
+           (!newMap, (oldEvs, newEvs)) =
+             case IM.updateWith dropReg fd' oldMap of
+               (Nothing,   _)    -> (oldMap, (mempty, mempty))
+               (Just prev, newm) -> (newm, pairEvents prev newm fd')
+       in return (newMap, (oldEvs, newEvs))
      let !modify = oldEvs /= newEvs
      when modify $ I.modifyFd emBackend fd oldEvs newEvs
      return modify
-
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
@@ -431,13 +444,10 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
-  do mfds <- 
-       modifyMVar (emFds mgr ! hashFd fd)
-       (\oldMap -> 
-         case IM.delete (fromIntegral fd) oldMap of
-           (Nothing,  _)       -> return (oldMap, Nothing)
-           (Just fds, !newMap) -> return (newMap, Just fds)
-       )
+  do mfds <- modifyMVar (emFds mgr ! hashFd fd) $ \oldMap ->
+       case IM.delete (fromIntegral fd) oldMap of
+         (Nothing,  _)       -> return (oldMap, Nothing)
+         (Just fds, !newMap) -> return (newMap, Just fds)
      case mfds of
        Nothing -> return ()
        Just fds -> do
