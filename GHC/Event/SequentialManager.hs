@@ -87,7 +87,7 @@ data FdData = FdData {
   , _fdCallback :: !IOCallback
   }
 
-data FdKey = FdKey { 
+data FdKey = FdKey {
       keyFd     :: {-# UNPACK #-} !Fd
     , keyUnique :: {-# UNPACK #-} !Unique
     } deriving (Eq, Show)
@@ -172,15 +172,15 @@ loop mgr@EventManager{..} = do
                           ++ show state
  where
   go = do running <- step mgr
-          when running (yield >> go) 
+          when running (yield >> go)
 
 step :: EventManager -> IO Bool
 step mgr@EventManager{..} = do
-  waitForIO 
+  waitForIO
   state <- readIORef emState
   state `seq` return (state == Running)
  where
-  waitForIO = 
+  waitForIO =
     do n <- I.pollNonBlock emBackend (onFdEvent mgr)
        when (n <= 0) (do yield
                          m <- I.pollNonBlock emBackend (onFdEvent mgr)
@@ -215,7 +215,7 @@ registerControlFd mgr fd evs = I.modifyFd (emBackend mgr) fd mempty evs
 
 -- | Does everything that closeFd does, except for updating the callback tables.
 -- It assumes the caller will update the callback tables and that the caller
--- holds the callback table lock for the fd. 
+-- holds the callback table lock for the fd.
 closeFd_ :: EventManager -> IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
 closeFd_ mgr oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
@@ -233,7 +233,7 @@ newWith be = do
   let !iofds = listArray (0, arraySize - 1) fdVars
   ctrl <- newControl
   state <- newIORef Created
-  us <- newSource 
+  us <- newSource
   _ <- mkWeakIORef state $ do
                st <- atomicModifyIORef state $ \s -> (Finished, s)
                when (st /= Finished) $ do
@@ -253,7 +253,7 @@ newWith be = do
 -- Registering interest in I/O events
 
 -- | Register interest in the given events, without waking the event
--- manager thread.  
+-- manager thread.
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
 registerFd_ mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
@@ -264,7 +264,7 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
     case IM.insertWith (++) fd' [fdd] oldMap of
       (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
                            return n
-      (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev) 
+      (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev)
                            return n
   return reg
 {-# INLINE registerFd_ #-}
@@ -302,7 +302,7 @@ closeFd mgr fd = do
 -- Combines invoking the callback and removing callbacks.  Note that
 -- with the ONESHOT backends the callback does not perform the deregistration
 -- with the backend, and hence does not need to be holding the callback table
--- lock.         
+-- lock.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs =
   if fd == controlReadFd emControl || fd == wakeupReadFd emControl
@@ -318,7 +318,7 @@ onFdEvent mgr@EventManager{..} fd evs =
     selectCallbacks ::
       IM.IntMap [FdData] -> [FdData] -> IO (IM.IntMap [FdData], [FdData])
     selectCallbacks curmap cbs = loop cbs [] []
-      where 
+      where
         loop [] fdds []     = return (curmap,cbs)
         loop [] fdds saved =
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
@@ -332,7 +332,7 @@ onFdEvent mgr@EventManager{..} fd evs =
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
   do modifyMVar_ (emFds ! hashFd fd) $ \oldMap ->
-       let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
+       let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey)
            fd'     = fromIntegral fd
        in case IM.updateWith dropReg fd' oldMap of
          (Nothing,   _)    -> return oldMap
@@ -351,7 +351,7 @@ newWith be = do
   let !iofds = listArray (0, arraySize - 1) fdVars
   ctrl <- newControl
   state <- newIORef Created
-  us <- newSource  
+  us <- newSource
   _ <- mkWeakIORef state $ do
                st <- atomicModifyIORef state $ \s -> (Finished, s)
                when (st /= Finished) $ do
@@ -380,12 +380,12 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
       !fdd  = FdData reg evs cb
-  modify <- modifyMVar (emFds ! hashFd fd) $ \oldMap -> 
+  modify <- modifyMVar (emFds ! hashFd fd) $ \oldMap ->
     let (!newMap, (oldEvs, newEvs)) =
           case IM.insertWith (++) fd' [fdd] oldMap of
             (Nothing,   n) -> (n, (mempty, evs))
             (Just prev, n) -> (n, pairEvents prev newMap fd')
-        !modify = oldEvs /= newEvs               
+        !modify = oldEvs /= newEvs
     in do when modify $ I.modifyFd emBackend fd oldEvs newEvs
           return (newMap, modify)
   return (reg, modify)
@@ -418,7 +418,7 @@ pairEvents prev m fd = let l = eventsOf prev
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
 unregisterFd_ EventManager{..} (FdKey fd u) =
   modifyMVar (emFds ! hashFd fd) $ \oldMap -> do
-    let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey) 
+    let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey)
         fd'     = fromIntegral fd
         (!newMap, (oldEvs, newEvs)) =
           case IM.updateWith dropReg fd' oldMap of
@@ -437,7 +437,7 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
-  modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd 
+  modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd
   wakeManager mgr
 
 ------------------------------------------------------------------------
