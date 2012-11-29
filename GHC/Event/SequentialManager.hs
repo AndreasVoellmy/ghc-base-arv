@@ -73,6 +73,7 @@ import qualified GHC.Event.KQueue as KQueue
 import qualified GHC.Event.EPoll  as EPoll
 #elif defined(HAVE_POLL)
 import qualified GHC.Event.Poll   as Poll
+import Control.Concurrent.MVar (readMVar)
 #else
 # error not implemented for this operating system
 #endif
