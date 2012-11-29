@@ -43,15 +43,13 @@ module GHC.Event.SequentialManager
 
 ------------------------------------------------------------------------
 -- Imports
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar,
-                                readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception (finally)
 import Control.Monad ((=<<), forM_, liftM, sequence, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (mappend, mconcat, mempty)
-import Data.Tuple (snd)
 import GHC.Arr (Array, (!), listArray)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
@@ -70,10 +68,13 @@ import System.Posix.Types (Fd)
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
+import Data.Tuple (snd)
 #elif defined(HAVE_EPOLL)
 import qualified GHC.Event.EPoll  as EPoll
+import Data.Tuple (snd)
 #elif defined(HAVE_POLL)
 import qualified GHC.Event.Poll   as Poll
+import Control.Concurrent.MVar (readMVar)
 #else
 # error not implemented for this operating system
 #endif
@@ -207,7 +208,7 @@ step mgr@EventManager{..} = do
     when (n <= 0) $ do
       yield
       m <- I.pollNonBlock emBackend (onFdEvent mgr)
-      when (m <= 0) $ do I.poll emBackend Forever (onFdEvent mgr)
+      when (m <= 0) $ do _ <- I.poll emBackend Forever (onFdEvent mgr)
                          return ()
 
 arraySize :: Int
@@ -246,14 +247,14 @@ closeFd_ mgr oldMap fd = do
       forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
       return newMap
 
-#if defined(HAVE_EPOLL)
+#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.
 registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd mgr@EventManager{..} cb fd evs = do
+registerFd EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg = FdKey fd u
       !fd' = fromIntegral fd
@@ -310,10 +311,10 @@ onFdEvent mgr@EventManager{..} fd evs =
       IM.IntMap [FdData] -> [FdData] -> IO (IM.IntMap [FdData], [FdData])
     selectCallbacks curmap cbs = loop cbs [] []
       where
-        loop [] fdds []    = return (curmap,cbs)
+        loop [] _    []    = return (curmap,cbs)
         loop [] fdds saved =
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
-        loop (fdd@(FdData reg evs' cb) : cbs') fdds saved
+        loop (fdd@(FdData _ evs' _) : cbs') fdds saved
           | evs `I.eventIs` evs' = loop cbs' (fdd:fdds) saved
           | otherwise            = loop cbs' fdds (fdd:saved)
 
@@ -326,14 +327,14 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
        let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey)
            fd'     = fromIntegral fd
        in case IM.updateWith dropReg fd' oldMap of
-         (Nothing,   _)    -> return oldMap
-         (Just prev, newm) -> return newm
+         (Nothing,   _) -> return oldMap
+         (Just _, newm) -> return newm
      return False
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
 unregisterFd mgr reg
-  = do unregisterFd_ mgr reg
+  = do _ <- unregisterFd_ mgr reg
        return ()
 #else
 ------------------------------------------------------------------------
@@ -344,7 +345,7 @@ unregisterFd mgr reg
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
 registerFd :: EventManager -> IOCallback -> Fd -> Event
               -> IO (FdKey, Bool)
-registerFd mgr@EventManager{..} cb fd evs = do
+registerFd EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
@@ -397,7 +398,7 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
-  modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd
+  modifyMVar_ (emFds mgr ! hashFd fd) $ \oldMap -> closeFd_ mgr oldMap fd
   wakeManager mgr
 
 ------------------------------------------------------------------------
@@ -406,7 +407,7 @@ closeFd mgr fd = do
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr fd evs =
-  if fd == controlReadFd emControl || fd == wakeupReadFd emControl
+  if fd == controlReadFd (emControl mgr) || fd == wakeupReadFd (emControl mgr)
   then handleControlEvent mgr fd evs
   else do fdMap <- readMVar (emFds mgr ! hashFd fd)
           case IM.lookup (fromIntegral fd) fdMap of
