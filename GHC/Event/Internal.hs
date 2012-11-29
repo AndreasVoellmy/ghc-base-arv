@@ -134,7 +134,7 @@ poll (Backend bState bPoll _ _ _ _) = bPoll bState
 {-# INLINE poll #-}
 
 pollNonBlock :: Backend -> (Fd -> Event -> IO ()) -> IO Int
-pollNonBlock (Backend bState bPoll bPollNonBlock _ _ _) = bPollNonBlock bState
+pollNonBlock (Backend bState _ bPollNonBlock _ _ _) = bPollNonBlock bState
 {-# INLINE pollNonBlock #-}
 
 modifyFd :: Backend -> Fd -> Event -> Event -> IO ()

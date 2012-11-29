@@ -80,12 +80,6 @@ new = do
   let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete epoll
   return be
 
-newEPoll :: IO EPoll
-newEPoll = do
-  epfd <- epollCreate
-  evts <- A.new 64
-  return (EPoll epfd evts)
-
 delete :: EPoll -> IO ()
 delete be = do
   _ <- c_close . fromEPollFd . epollFd $ be

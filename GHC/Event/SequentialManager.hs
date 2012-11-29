@@ -275,7 +275,7 @@ combineEvents ev fdds = mappend ev (eventsOf fdds)
 -- event manager thread.  The return value indicates whether the event
 -- manager ought to be woken.
 unregisterFd_ :: EventManager -> FdKey -> IO Bool
-unregisterFd_ EventManager{..} (FdKey fd u) =
+unregisterFd_ EventManager{..} FdKey { keyFd = fd, keyUnique = u} =
   do modifyMVar_ (emFds ! hashFd fd) $ \oldMap ->
        let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey)
            fd'     = fromIntegral fd
@@ -324,22 +324,22 @@ onFdEvent mgr@EventManager{..} fd evs =
 
     selectCallbacks ::
       IntMap [FdData] -> [FdData] -> IO (IntMap [FdData], [FdData])
-    selectCallbacks curmap cbs = loop cbs [] []
+    selectCallbacks curmap cbs = aux cbs [] []
       where
         -- nothing to rearm.
-        loop [] _    []          = return (curmap,cbs)
+        aux [] _    []          = return (curmap,cbs)
 
         -- reinsert and rearm; note that we already have the lock on the
         -- callback table for this fd, and we deleted above, so we know there
         -- is no entry in the table for this fd.
-        loop [] fdds saved@(_:_) = do
+        aux [] fdds saved@(_:_) = do
           I.modifyFdOnce emBackend fd $ eventsOf saved
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
 
         -- continue, saving those callbacks that don't match the event
-        loop (fdd@(FdData _ evs' _) : cbs') fdds saved
-          | evs `I.eventIs` evs' = loop cbs' (fdd:fdds) saved
-          | otherwise            = loop cbs' fdds (fdd:saved)
+        aux (fdd@(FdData _ evs' _) : cbs') fdds saved
+          | evs `I.eventIs` evs' = aux cbs' (fdd:fdds) saved
+          | otherwise            = aux cbs' fdds (fdd:saved)
 #else
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
