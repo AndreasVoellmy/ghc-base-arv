@@ -43,8 +43,7 @@ module GHC.Event.SequentialManager
 
 ------------------------------------------------------------------------
 -- Imports
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar,
-                                readMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception (finally)
 import Control.Monad ((=<<), forM_, liftM, sequence, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
@@ -186,7 +185,7 @@ step mgr@EventManager{..} = do
                          m <- I.pollNonBlock emBackend (onFdEvent mgr)
                          when
                            (m <= 0)
-                           (do I.poll emBackend Forever (onFdEvent mgr)
+                           (do _ <- I.poll emBackend Forever (onFdEvent mgr)
                                return ())
                      )
 
@@ -255,7 +254,7 @@ newWith be = do
 -- | Register interest in the given events, without waking the event
 -- manager thread.
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd_ mgr@EventManager{..} cb fd evs = do
+registerFd_ EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg = FdKey fd u
       !fd' = fromIntegral fd
@@ -319,10 +318,10 @@ onFdEvent mgr@EventManager{..} fd evs =
       IM.IntMap [FdData] -> [FdData] -> IO (IM.IntMap [FdData], [FdData])
     selectCallbacks curmap cbs = loop cbs [] []
       where
-        loop [] fdds []     = return (curmap,cbs)
+        loop [] _    []    = return (curmap,cbs)
         loop [] fdds saved =
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
-        loop (fdd@(FdData reg evs' cb) : cbs') fdds saved
+        loop (fdd@(FdData _ evs' _) : cbs') fdds saved
           | evs `I.eventIs` evs' = loop cbs' (fdd:fdds) saved
           | otherwise            = loop cbs' fdds (fdd:saved)
 
@@ -335,14 +334,14 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
        let dropReg = nullToNothing . filter ((/= u) . keyUnique . fdKey)
            fd'     = fromIntegral fd
        in case IM.updateWith dropReg fd' oldMap of
-         (Nothing,   _)    -> return oldMap
-         (Just prev, newm) -> return newm
+         (Nothing,   _) -> return oldMap
+         (Just _, newm) -> return newm
      return False
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
 unregisterFd mgr reg
-  = do unregisterFd_ mgr reg
+  = do _ <- unregisterFd_ mgr reg
        return ()
 #else
 newWith :: Backend -> IO EventManager
