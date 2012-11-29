@@ -152,7 +152,7 @@ pollNonBlock :: EPoll                     -- ^ state
                -> IO Int
 pollNonBlock ep f = pollWith epollWaitUnsafe ep 0 f
 
-pollWith :: (EPollFd -> Ptr Event -> Int -> Int -> IO Int) 
+pollWith :: (EPollFd -> Ptr Event -> Int -> Int -> IO Int)
             -> EPoll                     -- ^ state
             -> Int                       -- ^ timeout in milliseconds
             -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
