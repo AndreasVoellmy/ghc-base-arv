@@ -136,6 +136,28 @@ newDefaultBackend = error "no back end for this platform"
 new :: IO EventManager
 new = newWith =<< newDefaultBackend
 
+newWith :: Backend -> IO EventManager
+newWith be = do
+  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
+  let !iofds = listArray (0, arraySize - 1) fdVars
+  ctrl <- newControl
+  state <- newIORef Created
+  us <- newSource
+  _ <- mkWeakIORef state $ do
+               st <- atomicModifyIORef state $ \s -> (Finished, s)
+               when (st /= Finished) $ do
+                 I.delete be
+                 closeControl ctrl
+  let mgr = EventManager { emBackend = be
+                         , emFds = iofds
+                         , emState = state
+                         , emUniqueSource = us
+                         , emControl = ctrl
+                         }
+  registerControlFd mgr (controlReadFd ctrl) evtRead
+  registerControlFd mgr (wakeupReadFd ctrl) evtRead
+  return mgr
+
 -- | Asynchronously shuts down the event manager, if running.
 shutdown :: EventManager -> IO ()
 shutdown mgr = do
@@ -180,15 +202,13 @@ step mgr@EventManager{..} = do
   state <- readIORef emState
   state `seq` return (state == Running)
  where
-  waitForIO =
-    do n <- I.pollNonBlock emBackend (onFdEvent mgr)
-       when (n <= 0) (do yield
-                         m <- I.pollNonBlock emBackend (onFdEvent mgr)
-                         when
-                           (m <= 0)
-                           (do I.poll emBackend Forever (onFdEvent mgr)
-                               return ())
-                     )
+  waitForIO = do
+    n <- I.pollNonBlock emBackend (onFdEvent mgr)
+    when (n <= 0) $ do
+      yield
+      m <- I.pollNonBlock emBackend (onFdEvent mgr)
+      when (m <= 0) $ do I.poll emBackend Forever (onFdEvent mgr)
+                         return ()
 
 arraySize :: Int
 arraySize = 32
@@ -227,35 +247,13 @@ closeFd_ mgr oldMap fd = do
       return newMap
 
 #if defined(HAVE_EPOLL)
-newWith :: Backend -> IO EventManager
-newWith be = do
-  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
-  let !iofds = listArray (0, arraySize - 1) fdVars
-  ctrl <- newControl
-  state <- newIORef Created
-  us <- newSource
-  _ <- mkWeakIORef state $ do
-               st <- atomicModifyIORef state $ \s -> (Finished, s)
-               when (st /= Finished) $ do
-                 I.delete be
-                 closeControl ctrl
-  let mgr = EventManager { emBackend = be
-                         , emFds = iofds
-                         , emState = state
-                         , emUniqueSource = us
-                         , emControl = ctrl
-                         }
-  registerControlFd mgr (controlReadFd ctrl) evtRead
-  registerControlFd mgr (wakeupReadFd ctrl) evtRead
-  return mgr
-
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
 
 -- | Register interest in the given events, without waking the event
 -- manager thread.
-registerFd_ :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd_ mgr@EventManager{..} cb fd evs = do
+registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
+registerFd mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg = FdKey fd u
       !fd' = fromIntegral fd
@@ -267,13 +265,6 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
       (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev)
                            return n
   return reg
-{-# INLINE registerFd_ #-}
-
--- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
--- on the file descriptor @fd@.  @cb@ is called for each event that
--- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd = registerFd_
 {-# INLINE registerFd #-}
 
 combineEvents :: Event -> [FdData] -> Event
@@ -319,7 +310,7 @@ onFdEvent mgr@EventManager{..} fd evs =
       IM.IntMap [FdData] -> [FdData] -> IO (IM.IntMap [FdData], [FdData])
     selectCallbacks curmap cbs = loop cbs [] []
       where
-        loop [] fdds []     = return (curmap,cbs)
+        loop [] fdds []    = return (curmap,cbs)
         loop [] fdds saved =
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
         loop (fdd@(FdData reg evs' cb) : cbs') fdds saved
@@ -345,37 +336,15 @@ unregisterFd mgr reg
   = do unregisterFd_ mgr reg
        return ()
 #else
-newWith :: Backend -> IO EventManager
-newWith be = do
-  fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
-  let !iofds = listArray (0, arraySize - 1) fdVars
-  ctrl <- newControl
-  state <- newIORef Created
-  us <- newSource
-  _ <- mkWeakIORef state $ do
-               st <- atomicModifyIORef state $ \s -> (Finished, s)
-               when (st /= Finished) $ do
-                 I.delete be
-                 closeControl ctrl
-  let mgr = EventManager { emBackend = be
-                         , emFds = iofds
-                         , emState = state
-                         , emUniqueSource = us
-                         , emControl = ctrl
-                         }
-  registerControlFd mgr (controlReadFd ctrl) evtRead
-  registerControlFd mgr (wakeupReadFd ctrl) evtRead
-  return mgr
-
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
 
--- | Register interest in the given events, without waking the event
--- manager thread.  The 'Bool' return value indicates whether the
--- event manager ought to be woken.
-registerFd_ :: EventManager -> IOCallback -> Fd -> Event
-                         -> IO (FdKey, Bool)
-registerFd_ mgr@EventManager{..} cb fd evs = do
+-- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
+-- on the file descriptor @fd@.  @cb@ is called for each event that
+-- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
+registerFd :: EventManager -> IOCallback -> Fd -> Event
+              -> IO (FdKey, Bool)
+registerFd mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
@@ -388,17 +357,8 @@ registerFd_ mgr@EventManager{..} cb fd evs = do
         !modify = oldEvs /= newEvs
     in do when modify $ I.modifyFd emBackend fd oldEvs newEvs
           return (newMap, modify)
-  return (reg, modify)
-{-# INLINE registerFd_ #-}
-
--- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
--- on the file descriptor @fd@.  @cb@ is called for each event that
--- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd mgr cb fd evs = do
-  (r,wake) <- registerFd_ mgr cb fd evs
-  when wake $ wakeManager mgr
-  return r
+  when modify $ wakeManager mgr
+  return reg
 {-# INLINE registerFd #-}
 
 -- | Wake up the event manager.
