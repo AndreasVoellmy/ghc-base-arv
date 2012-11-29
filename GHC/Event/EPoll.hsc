@@ -67,7 +67,7 @@ import Data.Bits (Bits, (.|.), (.&.))
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
 import Foreign.C.Error (throwErrnoIfMinus1, throwErrnoIfMinus1_,
-                        Errno, eNOENT, throwErrno, getErrno)
+                        eNOENT, throwErrno, getErrno)
 import Foreign.C.Types (CInt(..))
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr)

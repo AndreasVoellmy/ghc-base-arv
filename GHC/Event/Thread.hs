@@ -16,12 +16,10 @@ module GHC.Event.Thread (
   ) where
 
 
-import qualified GHC.Arr as A
 import GHC.Base
 import Data.Maybe (Maybe(..))
 import Data.Tuple (snd)
 import System.Posix.Types (Fd)
-import GHC.Conc.Sync (forkIO, forkOn)
 import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
 import qualified GHC.Event.Internal as E
 import qualified GHC.Event.Manager as NE
@@ -32,8 +30,7 @@ import Control.Exception
 import Data.IORef
 import GHC.Conc.Sync
 import System.IO.Unsafe
-import GHC.List (replicate, head)
-import Control.Monad (sequence, sequence_, forM, zipWithM_, when)
+import Control.Monad (sequence_, forM, zipWithM_, when)
 import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
@@ -142,13 +139,13 @@ threadWaitSTM evt fd = mask_ $ do
   m <- newTVarIO Nothing
   !mgr <- getSystemEventManager
   reg <- SM.registerFd
-           mgr (\fd evt -> atomically $ writeTVar m (Just evt)) fd evt
+           mgr (\_ ev -> atomically $ writeTVar m (Just ev)) fd evt
   let waitAction = do
         mevt <- readTVar m
         case mevt of
           Nothing -> retry
-          Just evt ->
-            when (evt `E.eventIs` E.evtClose)
+          Just ev ->
+            when (ev `E.eventIs` E.evtClose)
                  (throwSTM $ errnoToIOError "threadWait" eBADF Nothing Nothing)
   let closeAction = SM.unregisterFd_ mgr reg >> return ()
   return (waitAction, closeAction)
@@ -165,7 +162,7 @@ threadWait :: NE.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
   !mgr <- getSystemEventManager
-  reg <- SM.registerFd mgr (\fd evt -> putMVar m evt) fd evt
+  reg <- SM.registerFd mgr (\_ ev -> putMVar m ev) fd evt
   evt' <- takeMVar m `onException` SM.unregisterFd_ mgr reg
   if evt' `E.eventIs` E.evtClose
     then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
