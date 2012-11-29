@@ -329,16 +329,12 @@ onFdEvent mgr@EventManager{..} fd evs =
         -- nothing to rearm.
         loop [] _    []          = return (curmap,cbs)
 
-        -- reinsert and rearm; we have a lock on the callback table
-        -- for this fd.
-        loop [] fdds saved@(_:_) = 
-          case IM.insertWith (\_ _ -> saved) fd' saved curmap of
-            (Nothing, newmap)   ->  do
-              I.modifyFdOnce emBackend fd evs
-              return (newmap, fdds)
-            (Just prev, newmap) -> do
-              I.modifyFdOnce emBackend fd (combineEvents evs prev)
-              return (newmap, fdds)
+        -- reinsert and rearm; note that we already have the lock on the
+        -- callback table for this fd, and we deleted above, so we know there
+        -- is no entry in the table for this fd.
+        loop [] fdds saved@(_:_) = do
+          I.modifyFdOnce emBackend fd $ eventsOf saved
+          return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
 
         -- continue, saving those callbacks that don't match the event
         loop (fdd@(FdData _ evs' _) : cbs') fdds saved
