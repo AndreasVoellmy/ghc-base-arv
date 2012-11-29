@@ -50,7 +50,6 @@ import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Monoid (mappend, mconcat, mempty)
-import Data.Tuple (snd)
 import GHC.Arr (Array, (!), listArray)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
@@ -69,8 +68,10 @@ import System.Posix.Types (Fd)
 
 #if defined(HAVE_KQUEUE)
 import qualified GHC.Event.KQueue as KQueue
+import Data.Tuple (snd)
 #elif defined(HAVE_EPOLL)
 import qualified GHC.Event.EPoll  as EPoll
+import Data.Tuple (snd)
 #elif defined(HAVE_POLL)
 import qualified GHC.Event.Poll   as Poll
 import Control.Concurrent.MVar (readMVar)
@@ -375,7 +376,7 @@ newWith be = do
 -- event manager ought to be woken.
 registerFd_ :: EventManager -> IOCallback -> Fd -> Event
                          -> IO (FdKey, Bool)
-registerFd_ mgr@EventManager{..} cb fd evs = do
+registerFd_ EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
@@ -437,7 +438,7 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way.
 closeFd :: EventManager -> Fd -> IO ()
 closeFd mgr fd = do
-  modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd
+  -- modifyMVar_ (emFds mgr ! hashFd fd) $ closeFd_ fd -- FIXME
   wakeManager mgr
 
 ------------------------------------------------------------------------
@@ -446,7 +447,7 @@ closeFd mgr fd = do
 -- | Call the callbacks corresponding to the given file descriptor.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr fd evs =
-  if fd == controlReadFd emControl || fd == wakeupReadFd emControl
+  if fd == controlReadFd (emControl mgr) || fd == wakeupReadFd (emControl mgr) -- FIXME
   then handleControlEvent mgr fd evs
   else do fdMap <- readMVar (emFds mgr ! hashFd fd)
           case IM.lookup (fromIntegral fd) fdMap of
