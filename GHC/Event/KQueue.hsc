@@ -82,7 +82,7 @@ new = do
   changesArr <- A.empty
   changes <- newMVar changesArr
   events <- A.new 64
-  let !be = E.backend poll modifyFd delete (EventQueue qfd changes events)
+  let !be = E.backend poll pollNonBlock modifyFd modifyFdOnce delete (EventQueue qfd changes events)
   return be
 
 delete :: EventQueue -> IO ()
@@ -98,10 +98,16 @@ modifyFd q fd oevt nevt = withMVar (eqChanges q) $ \ch -> do
   when (nevt `E.eventIs` E.evtRead)  $ addChange filterRead flagAdd
   when (nevt `E.eventIs` E.evtWrite) $ addChange filterWrite flagAdd
 
+modifyFdOnce :: EventQueue -> Fd -> E.Event -> IO ()
+modifyFdOnce q fd evt = withMVar (eqChanges q) $ \ch -> do
+  let addChange filt flag = A.snoc ch $ event fd filt flag noteEOF
+  when (evt `E.eventIs` E.evtRead)  $ addChange filterRead (flagAdd .|. flagOneshot)
+  when (evt `E.eventIs` E.evtWrite) $ addChange filterWrite (flagAdd .|. flagOneshot)
+
 poll :: EventQueue
      -> Timeout
      -> (Fd -> E.Event -> IO ())
-     -> IO ()
+     -> IO Int
 poll EventQueue{..} tout f = do
     changesArr <- A.empty
     changes <- swapMVar eqChanges changesArr
@@ -117,6 +123,30 @@ poll EventQueue{..} tout f = do
         cap <- A.capacity eqEvents
         when (n == cap) $ A.ensureCapacity eqEvents (2 * cap)
         A.forM_ eqEvents $ \e -> f (fromIntegral (ident e)) (toEvent (filter e))
+    return n
+
+-- | Select a set of file descriptors which are ready for I/O
+-- operations and call @f@ for all ready file descriptors, passing the
+-- events that are ready.
+pollNonBlock :: EventQueue                  -- ^ state
+               -> (Fd -> E.Event -> IO ())  -- ^ I/O callback
+               -> IO Int
+pollNonBlock EventQueue{..} f = do
+    changesArr <- A.empty
+    changes <- swapMVar eqChanges changesArr
+    changesLen <- A.length changes
+    len <- A.length eqEvents
+    when (changesLen > len) $ A.ensureCapacity eqEvents (2 * changesLen)
+    n <- A.useAsPtr changes $ \changesPtr chLen ->
+           A.unsafeLoad eqEvents $ \evPtr evCap ->
+               withTimeSpec (TimeSpec 0 0) $
+                   keventUnsafe eqFd changesPtr chLen evPtr evCap
+
+    unless (n == 0) $ do
+        cap <- A.capacity eqEvents
+        when (n == cap) $ A.ensureCapacity eqEvents (2 * cap)
+        A.forM_ eqEvents $ \e -> f (fromIntegral (ident e)) (toEvent (filter e))
+    return n
 
 ------------------------------------------------------------------------
 -- FFI binding
@@ -211,11 +241,12 @@ newtype FFlag = FFlag Word32
  }
 
 newtype Flag = Flag Word16
-    deriving (Eq, Show, Storable)
+    deriving (Bits, Eq, Num, Show, Storable)
 
 #{enum Flag, Flag
  , flagAdd     = EV_ADD
  , flagDelete  = EV_DELETE
+ , flagOneshot = EV_ONESHOT
  }
 
 newtype Filter = Filter Word16
@@ -260,6 +291,16 @@ kevent k chs chlen evs evlen ts
       c_kevent k chs (fromIntegral chlen) evs (fromIntegral evlen) ts
 #endif
 
+keventUnsafe :: QueueFd -> Ptr Event -> Int -> Ptr Event -> Int -> Ptr TimeSpec
+       -> IO Int
+keventUnsafe k chs chlen evs evlen ts
+    = fmap fromIntegral $ E.throwErrnoIfMinus1NoRetry "kevent" $
+#if defined(HAVE_KEVENT64)
+      c_kevent64_unsafe k chs (fromIntegral chlen) evs (fromIntegral evlen) 0 ts
+#else
+      c_kevent_unsafe k chs (fromIntegral chlen) evs (fromIntegral evlen) ts
+#endif
+
 withTimeSpec :: TimeSpec -> (Ptr TimeSpec -> IO a) -> IO a
 withTimeSpec ts f =
     if tv_sec ts < 0 then
@@ -290,9 +331,16 @@ foreign import ccall unsafe "kqueue"
 foreign import ccall safe "kevent64"
     c_kevent64 :: QueueFd -> Ptr Event -> CInt -> Ptr Event -> CInt -> CUInt
                -> Ptr TimeSpec -> IO CInt
+foreign import ccall unsafe "kevent64"
+    c_kevent64_unsafe :: QueueFd -> Ptr Event -> CInt -> Ptr Event -> CInt -> CUInt
+               -> Ptr TimeSpec -> IO CInt
 #elif defined(HAVE_KEVENT)
 foreign import ccall safe "kevent"
     c_kevent :: QueueFd -> Ptr Event -> CInt -> Ptr Event -> CInt
+             -> Ptr TimeSpec -> IO CInt
+
+foreign import ccall unsafe "kevent"
+    c_kevent_unsafe :: QueueFd -> Ptr Event -> CInt -> Ptr Event -> CInt
              -> Ptr TimeSpec -> IO CInt
 #else
 #error no kevent system call available!?

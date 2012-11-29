@@ -227,7 +227,7 @@ closeFd_ mgr oldMap fd = do
       forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
       return newMap
 
-#if defined(HAVE_EPOLL)
+#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
 newWith :: Backend -> IO EventManager
 newWith be = do
   fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
