@@ -286,7 +286,7 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
 
 -- | Drop a previous file descriptor registration.
 unregisterFd :: EventManager -> FdKey -> IO ()
-unregisterFd mgr reg = do 
+unregisterFd mgr reg = do
   _ <- unregisterFd_ mgr reg
   return ()
 
@@ -308,7 +308,7 @@ closeFd mgr fd = do
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
--- Combines invoking the callback and removing callbacks.  
+-- Combines invoking the callback and removing callbacks.
 onFdEvent :: EventManager -> Fd -> Event -> IO ()
 onFdEvent mgr@EventManager{..} fd evs =
   if fd == controlReadFd emControl || fd == wakeupReadFd emControl
@@ -321,7 +321,7 @@ onFdEvent mgr@EventManager{..} fd evs =
   where
     fd' :: Int
     fd' = fromIntegral fd
-    
+
     selectCallbacks ::
       IntMap [FdData] -> [FdData] -> IO (IntMap [FdData], [FdData])
     selectCallbacks curmap cbs = loop cbs [] []
