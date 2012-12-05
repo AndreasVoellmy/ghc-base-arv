@@ -139,7 +139,7 @@ newWith :: Backend -> IO EventManager
 newWith be = do
   fdVars <- sequence $ replicate arraySize (newMVar IM.empty)
   let !iofds = listArray (0, arraySize - 1) fdVars
-  ctrl <- newControl
+  ctrl <- newControl False
   state <- newIORef Created
   us <- newSource
   _ <- mkWeakIORef state $ do

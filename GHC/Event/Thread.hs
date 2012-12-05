@@ -30,7 +30,7 @@ import Control.Exception
 import Data.IORef
 import GHC.Conc.Sync
 import System.IO.Unsafe
-import Control.Monad (sequence_, forM, zipWithM_, when)
+import Control.Monad (sequence_, forM, forM_, zipWithM_, when)
 import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
@@ -87,7 +87,7 @@ ensureTimerManagerIsRunning
   | not threaded = return ()
   | otherwise =
       modifyMVar_ timerManagerThreadRef $ \old -> do
-         let createTimerMgr =  do !tmgr <- NE.new
+         let createTimerMgr =  do !tmgr <- NE.new shutdownManagers
                                   writeIORef timerManagerRef (Just tmgr)
                                   !tid <- forkIO (NE.loop tmgr)
                                   labelThread tid "TimerManager"
@@ -111,28 +111,30 @@ ensureTimerManagerIsRunning
                  createTimerMgr
                _other         -> return st
 
-ensureIOManagerIsRunning :: IO ()
-ensureIOManagerIsRunning
-  | not threaded = return ()
-  | otherwise =
-    do ensureTimerManagerIsRunning
-       modifyMVar_ eventManagerLock $ \() -> do
-         sequence_ [ do m <- readIOArray eventManagerRef i
-                        case m of
-                          Nothing -> create i
-                          Just (tid,mgr) -> do
-                            s <- threadStatus tid
-                            case s of
-                              ThreadFinished -> create i
-                              ThreadDied     -> SM.cleanup mgr >> create i
-                              _other         -> return ()
-                   | i <- [0,1..numCapabilities-1]]
-         return ()
+ensureIOManagerIsRunning1 :: Int -> IO ()
+ensureIOManagerIsRunning1 i = do
+  m <- readIOArray eventManagerRef i
+  case m of
+    Nothing -> create i
+    Just (tid,mgr) -> do
+      s <- threadStatus tid
+      case s of
+        ThreadFinished -> create i
+        ThreadDied     -> SM.cleanup mgr >> create i
+        _other         -> return ()
   where
-    create i = do mgr <- SM.new
-                  t   <- forkOn i (SM.loop mgr)
-                  labelThread t "IOManager"
-                  writeIOArray eventManagerRef i (Just (t,mgr))
+    create i = do
+      mgr <- SM.new
+      t   <- forkOn i (SM.loop mgr)
+      labelThread t "IOManager"
+      writeIOArray eventManagerRef i (Just (t,mgr))
+
+ensureIOManagerIsRunning :: IO ()
+ensureIOManagerIsRunning | not threaded = return ()
+                         | otherwise    = do
+    ensureTimerManagerIsRunning
+    modifyMVar_ eventManagerLock $ \() ->
+      forM_ [0,1..numCapabilities-1] ensureIOManagerIsRunning1 
 
 threadWaitSTM :: NE.Event -> Fd -> IO (STM (), IO ())
 threadWaitSTM evt fd = mask_ $ do

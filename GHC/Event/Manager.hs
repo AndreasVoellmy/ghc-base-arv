@@ -155,6 +155,7 @@ data EventManager = EventManager
     , emState        :: {-# UNPACK #-} !(IORef State)
     , emUniqueSource :: {-# UNPACK #-} !UniqueSource
     , emControl      :: {-# UNPACK #-} !Control
+    , emDieCallback  :: IO ()
     }
 
 ------------------------------------------------------------------------
@@ -165,7 +166,7 @@ handleControlEvent mgr reg _evt = do
   msg <- readControlMessage (emControl mgr) (keyFd reg)
   case msg of
     CMsgWakeup      -> return ()
-    CMsgDie         -> writeIORef (emState mgr) Finished
+    CMsgDie         -> writeIORef (emState mgr) Finished >> emDieCallback mgr
     CMsgSignal fp s -> runHandlers fp s
 
 newDefaultBackend :: IO Backend
@@ -180,14 +181,14 @@ newDefaultBackend = error "no back end for this platform"
 #endif
 
 -- | Create a new event manager.
-new :: IO EventManager
-new = newWith =<< newDefaultBackend
+new :: IO () -> IO EventManager
+new dieCallback = newWith dieCallback =<< newDefaultBackend
 
-newWith :: Backend -> IO EventManager
-newWith be = do
+newWith :: IO () -> Backend -> IO EventManager
+newWith dieCallback be = do
   iofds <- newMVar IM.empty
   timeouts <- newIORef id
-  ctrl <- newControl
+  ctrl <- newControl True
   state <- newIORef Created
   us <- newSource
   _ <- mkWeakIORef state $ do
@@ -201,6 +202,7 @@ newWith be = do
                          , emState = state
                          , emUniqueSource = us
                          , emControl = ctrl
+                         , emDieCallback = dieCallback
                          }
   _ <- registerFd_ mgr (handleControlEvent mgr) (controlReadFd ctrl) evtRead
   _ <- registerFd_ mgr (handleControlEvent mgr) (wakeupReadFd ctrl) evtRead
