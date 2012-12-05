@@ -30,30 +30,29 @@ import Control.Exception
 import Data.IORef
 import GHC.Conc.Sync
 import System.IO.Unsafe
-import Control.Monad (sequence_, forM, forM_, zipWithM_, when)
+import Control.Monad (forM, forM_, zipWithM_, when)
 import GHC.Num
 import Foreign.Ptr (Ptr)
 import GHC.IOArray
 
 shutdownManagers :: IO ()
 shutdownManagers =
-  do sequence_ [do mmgr <- readIOArray eventManagerRef i
-                   case mmgr of
-                     Nothing -> return ()
-                     Just (_,mgr) -> SM.shutdown mgr
-               | i <- [0,1..numCapabilities-1]
-               ]
+  do forM_ [0,1..numCapabilities-1] $ \i -> do
+       mmgr <- readIOArray eventManagerRef i
+       case mmgr of
+         Nothing -> return ()
+         Just (_,mgr) -> SM.shutdown mgr
      mtmgr <- getTimerManager
      case mtmgr of
        Nothing -> return ()
        Just tmgr -> NE.shutdown tmgr
 
 getSystemEventManager :: IO SM.EventManager
-getSystemEventManager =
-  do t <- myThreadId
-     (cap, _) <- threadCapability t
-     Just (_,mgr) <- readIOArray eventManagerRef cap
-     return mgr
+getSystemEventManager = do
+  t <- myThreadId
+  (cap, _) <- threadCapability t
+  Just (_,mgr) <- readIOArray eventManagerRef cap
+  return mgr
 
 getTimerManager :: IO (Maybe NE.EventManager)
 getTimerManager = readIORef timerManagerRef
@@ -76,22 +75,23 @@ timerManagerRef = unsafePerformIO $ do
   sharedCAF em getOrSetSystemEventThreadEventManagerStore
 {-# NOINLINE timerManagerRef #-}
 
-{-# NOINLINE timerManagerThreadRef #-}
 timerManagerThreadRef :: MVar (Maybe ThreadId)
 timerManagerThreadRef = unsafePerformIO $ do
    m <- newMVar Nothing
    sharedCAF m getOrSetSystemEventThreadIOManagerThreadStore
+{-# NOINLINE timerManagerThreadRef #-}
 
 ensureTimerManagerIsRunning :: IO ()
 ensureTimerManagerIsRunning
   | not threaded = return ()
   | otherwise =
       modifyMVar_ timerManagerThreadRef $ \old -> do
-         let createTimerMgr =  do !tmgr <- NE.new shutdownManagers
-                                  writeIORef timerManagerRef (Just tmgr)
-                                  !tid <- forkIO (NE.loop tmgr)
-                                  labelThread tid "TimerManager"
-                                  return (Just tid)
+         let createTimerMgr =  do
+               !tmgr <- NE.new shutdownManagers
+               writeIORef timerManagerRef (Just tmgr)
+               !tid <- forkIO (NE.loop tmgr)
+               labelThread tid "TimerManager"
+               return (Just tid)
          case old of
            Nothing -> createTimerMgr
            st@(Just t) -> do
