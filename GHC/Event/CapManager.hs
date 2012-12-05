@@ -5,7 +5,7 @@
            , RecordWildCards
   #-}
 
-module GHC.Event.SequentialManager
+module GHC.Event.CapManager
     ( -- * Types
       EventManager
 

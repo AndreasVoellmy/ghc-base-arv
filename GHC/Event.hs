@@ -43,6 +43,6 @@ module GHC.Event
     , unregisterTimeout
     ) where
 
-import GHC.Event.Manager
+import GHC.Event.TimerManager
 import GHC.Event.Thread (getSystemEventManager)
 

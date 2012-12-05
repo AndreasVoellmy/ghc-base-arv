@@ -239,8 +239,8 @@ Library {
             GHC.Event.IntMap
             GHC.Event.Internal
             GHC.Event.KQueue
-            GHC.Event.Manager
-            GHC.Event.SequentialManager
+            GHC.Event.TimerManager
+            GHC.Event.CapManager
             GHC.Event.PSQ
             GHC.Event.Poll
             GHC.Event.Thread

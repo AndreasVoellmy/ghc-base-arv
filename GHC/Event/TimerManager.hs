@@ -8,7 +8,7 @@
            , FlexibleInstances
   #-}
 
-module GHC.Event.Manager
+module GHC.Event.TimerManager
     ( -- * Types
       EventManager
 

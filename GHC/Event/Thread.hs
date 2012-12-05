@@ -22,8 +22,8 @@ import Data.Tuple (snd)
 import System.Posix.Types (Fd)
 import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
 import qualified GHC.Event.Internal as E
-import qualified GHC.Event.Manager as NE
-import qualified GHC.Event.SequentialManager as SM
+import qualified GHC.Event.TimerManager as NE
+import qualified GHC.Event.CapManager as SM
 import qualified GHC.Event.IntMap as IM
 import Foreign.C.Error
 import Control.Exception
