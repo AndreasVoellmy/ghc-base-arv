@@ -58,7 +58,6 @@ import GHC.Event.Internal (Backend, Event, evtClose, evtRead, evtWrite,
 import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import System.Posix.Types (Fd)
 
-import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
 
@@ -74,21 +73,6 @@ import qualified GHC.Event.Poll   as Poll
 
 ------------------------------------------------------------------------
 -- Types
-
-data FdData = FdData {
-      fdKey       :: {-# UNPACK #-} !FdKey
-    , fdEvents    :: {-# UNPACK #-} !Event
-    , _fdCallback :: !IOCallback
-    }
-
--- | A file descriptor registration cookie.
-data FdKey = FdKey {
-      keyFd     :: {-# UNPACK #-} !Fd
-    , keyUnique :: {-# UNPACK #-} !Unique
-    } deriving (Eq, Show)
-
--- | Callback invoked on I/O events.
-type IOCallback = FdKey -> Event -> IO ()
 
 -- | A timeout registration cookie.
 newtype TimeoutKey   = TK Unique
@@ -138,7 +122,6 @@ type TimeoutEdit = TimeoutQueue -> TimeoutQueue
 -- | The event manager state.
 data TimerManager = TimerManager
     { emBackend      :: !Backend
-    , emFds          :: {-# UNPACK #-} !(MVar (IM.IntMap [FdData]))
     , emTimeouts     :: {-# UNPACK #-} !(IORef TimeoutEdit)
     , emState        :: {-# UNPACK #-} !(IORef State)
     , emUniqueSource :: {-# UNPACK #-} !UniqueSource
@@ -149,9 +132,9 @@ data TimerManager = TimerManager
 ------------------------------------------------------------------------
 -- Creation
 
-handleControlEvent :: TimerManager -> FdKey -> Event -> IO ()
+handleControlEvent :: TimerManager -> Fd -> Event -> IO ()
 handleControlEvent mgr reg _evt = do
-  msg <- readControlMessage (emControl mgr) (keyFd reg)
+  msg <- readControlMessage (emControl mgr) reg
   case msg of
     CMsgWakeup      -> return ()
     CMsgDie         -> writeIORef (emState mgr) Finished >> emDieCallback mgr
@@ -174,26 +157,24 @@ new dieCallback = newWith dieCallback =<< newDefaultBackend
 
 newWith :: IO () -> Backend -> IO TimerManager
 newWith dieCallback be = do
-  iofds <- newMVar IM.empty
   timeouts <- newIORef id
   ctrl <- newControl True
   state <- newIORef Created
   us <- newSource
   _ <- mkWeakIORef state $ do
-               st <- atomicModifyIORef state $ \s -> (Finished, s)
-               when (st /= Finished) $ do
-                 I.delete be
-                 closeControl ctrl
+    st <- atomicModifyIORef state $ \s -> (Finished, s)
+    when (st /= Finished) $ do
+      I.delete be
+      closeControl ctrl
   let mgr = TimerManager { emBackend = be
-                         , emFds = iofds
                          , emTimeouts = timeouts
                          , emState = state
                          , emUniqueSource = us
                          , emControl = ctrl
                          , emDieCallback = dieCallback
                          }
-  _ <- registerFd_ mgr (handleControlEvent mgr) (controlReadFd ctrl) evtRead
-  _ <- registerFd_ mgr (handleControlEvent mgr) (wakeupReadFd ctrl) evtRead
+  I.modifyFd be (controlReadFd ctrl) mempty evtRead
+  I.modifyFd be (wakeupReadFd ctrl) mempty evtRead  
   return mgr
 
 -- | Asynchronously shuts down the event manager, if running.
@@ -237,7 +218,7 @@ loop mgr@TimerManager{..} = do
 step :: TimerManager -> TimeoutQueue -> IO (Bool, TimeoutQueue)
 step mgr@TimerManager{..} tq = do
   (timeout, q') <- mkTimeout tq
-  _ <- I.poll emBackend timeout (onFdEvent mgr)
+  _ <- I.poll emBackend timeout (handleControlEvent mgr)
   state <- readIORef emState
   state `seq` return (state == Running, q')
  where
@@ -258,88 +239,9 @@ step mgr@TimerManager{..} tq = do
                 let t' = t - now in t' `seq` Timeout t'
       return (timeout, q'')
 
-------------------------------------------------------------------------
--- Registering interest in I/O events
-
--- | Register interest in the given events, without waking the event
--- manager thread.  The 'Bool' return value indicates whether the
--- event manager ought to be woken.
-registerFd_ :: TimerManager -> IOCallback -> Fd -> Event
-            -> IO (FdKey, Bool)
-registerFd_ TimerManager{..} cb fd evs = do
-  u <- newUnique emUniqueSource
-  modifyMVar emFds $ \oldMap -> do
-    let fd'  = fromIntegral fd
-        reg  = FdKey fd u
-        !fdd = FdData reg evs cb
-        (!newMap, (oldEvs, newEvs)) =
-            case IM.insertWith (++) fd' [fdd] oldMap of
-              (Nothing,   n) -> (n, (mempty, evs))
-              (Just prev, n) -> (n, pairEvents prev newMap fd')
-        modify = oldEvs /= newEvs
-    when modify $ I.modifyFd emBackend fd oldEvs newEvs
-    return (newMap, (reg, modify))
-{-# INLINE registerFd_ #-}
-
--- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
--- on the file descriptor @fd@.  @cb@ is called for each event that
--- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: TimerManager -> IOCallback -> Fd -> Event -> IO FdKey
-registerFd mgr cb fd evs = do
-  (r, wake) <- registerFd_ mgr cb fd evs
-  when wake $ wakeManager mgr
-  return r
-{-# INLINE registerFd #-}
-
 -- | Wake up the event manager.
 wakeManager :: TimerManager -> IO ()
 wakeManager mgr = sendWakeup (emControl mgr)
-
-eventsOf :: [FdData] -> Event
-eventsOf = mconcat . map fdEvents
-
-pairEvents :: [FdData] -> IM.IntMap [FdData] -> Int -> (Event, Event)
-pairEvents prev m fd = let l = eventsOf prev
-                           r = case IM.lookup fd m of
-                                 Nothing  -> mempty
-                                 Just fds -> eventsOf fds
-                       in (l, r)
-
--- | Drop a previous file descriptor registration, without waking the
--- event manager thread.  The return value indicates whether the event
--- manager ought to be woken.
-unregisterFd_ :: TimerManager -> FdKey -> IO Bool
-unregisterFd_ TimerManager{..} (FdKey fd u) =
-  modifyMVar emFds $ \oldMap -> do
-    let dropReg cbs = case filter ((/= u) . keyUnique . fdKey) cbs of
-                          []   -> Nothing
-                          cbs' -> Just cbs'
-        fd' = fromIntegral fd
-        (!newMap, (oldEvs, newEvs)) =
-            case IM.updateWith dropReg fd' oldMap of
-              (Nothing,   _)    -> (oldMap, (mempty, mempty))
-              (Just prev, newm) -> (newm, pairEvents prev newm fd')
-        modify = oldEvs /= newEvs
-    when modify $ I.modifyFd emBackend fd oldEvs newEvs
-    return (newMap, modify)
-
--- | Drop a previous file descriptor registration.
-unregisterFd :: TimerManager -> FdKey -> IO ()
-unregisterFd mgr reg = do
-  wake <- unregisterFd_ mgr reg
-  when wake $ wakeManager mgr
-
--- | Close a file descriptor in a race-safe way.
-closeFd :: TimerManager -> (Fd -> IO ()) -> Fd -> IO ()
-closeFd mgr close fd = do
-  fds <- modifyMVar (emFds mgr) $ \oldMap -> do
-    close fd
-    case IM.delete (fromIntegral fd) oldMap of
-      (Nothing,  _)       -> return (oldMap, [])
-      (Just fds, !newMap) -> do
-        when (eventsOf fds /= mempty) $ wakeManager mgr
-        return (newMap, fds)
-  forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 ------------------------------------------------------------------------
 -- Registering interest in timeout events
@@ -383,15 +285,3 @@ updateTimeout mgr (TK key) us = do
   atomicModifyIORef (emTimeouts mgr) $ \f ->
       let f' = (Q.adjust (const expTime) key) . f in (f', ())
   wakeManager mgr
-
-------------------------------------------------------------------------
--- Utilities
-
--- | Call the callbacks corresponding to the given file descriptor.
-onFdEvent :: TimerManager -> Fd -> Event -> IO ()
-onFdEvent mgr fd evs = do
-  fds <- readMVar (emFds mgr)
-  case IM.lookup (fromIntegral fd) fds of
-      Just cbs -> forM_ cbs $ \(FdData reg ev cb) ->
-                    when (evs `I.eventIs` ev) $ cb reg evs
-      Nothing  -> return ()
