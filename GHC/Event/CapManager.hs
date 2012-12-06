@@ -26,7 +26,7 @@ module GHC.Event.CapManager
     , evtRead
     , evtWrite
     , IOCallback
-    , FdKey
+    , FdKey(keyFd)
     , registerFd
     , unregisterFd_
     , unregisterFd

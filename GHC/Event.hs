@@ -13,15 +13,7 @@ module GHC.Event
       EventManager
 
       -- * Creation
-    , new
     , getSystemEventManager
-
-      -- * Running
-    , loop
-
-    -- ** Stepwise running
-    , step
-    , shutdown
 
       -- * Registering interest in I/O events
     , Event
@@ -30,12 +22,13 @@ module GHC.Event
     , IOCallback
     , FdKey(keyFd)
     , registerFd
-    , registerFd_
     , unregisterFd
     , unregisterFd_
     , closeFd
 
       -- * Registering interest in timeout events
+    , TimerManager
+    , getTimerManager
     , TimeoutCallback
     , TimeoutKey
     , registerTimeout
@@ -44,5 +37,6 @@ module GHC.Event
     ) where
 
 import GHC.Event.TimerManager
-import GHC.Event.Thread (getSystemEventManager)
+import GHC.Event.CapManager 
+import GHC.Event.Thread (getSystemEventManager, getTimerManager)
 

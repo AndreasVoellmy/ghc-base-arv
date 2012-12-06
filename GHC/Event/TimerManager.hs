@@ -10,7 +10,7 @@
 
 module GHC.Event.TimerManager
     ( -- * Types
-      EventManager
+      TimerManager
 
       -- * Creation
     , new
@@ -24,18 +24,6 @@ module GHC.Event.TimerManager
     , shutdown
     , cleanup
     , wakeManager
-
-      -- * Registering interest in I/O events
-    , Event
-    , evtRead
-    , evtWrite
-    , IOCallback
-    , FdKey(keyFd)
-    , registerFd_
-    , registerFd
-    , unregisterFd_
-    , unregisterFd
-    , closeFd
 
       -- * Registering interest in timeout events
     , TimeoutCallback
@@ -148,7 +136,7 @@ this bug is resolved: http://hackage.haskell.org/trac/ghc/ticket/3838
 type TimeoutEdit = TimeoutQueue -> TimeoutQueue
 
 -- | The event manager state.
-data EventManager = EventManager
+data TimerManager = TimerManager
     { emBackend      :: !Backend
     , emFds          :: {-# UNPACK #-} !(MVar (IM.IntMap [FdData]))
     , emTimeouts     :: {-# UNPACK #-} !(IORef TimeoutEdit)
@@ -161,7 +149,7 @@ data EventManager = EventManager
 ------------------------------------------------------------------------
 -- Creation
 
-handleControlEvent :: EventManager -> FdKey -> Event -> IO ()
+handleControlEvent :: TimerManager -> FdKey -> Event -> IO ()
 handleControlEvent mgr reg _evt = do
   msg <- readControlMessage (emControl mgr) (keyFd reg)
   case msg of
@@ -181,10 +169,10 @@ newDefaultBackend = error "no back end for this platform"
 #endif
 
 -- | Create a new event manager.
-new :: IO () -> IO EventManager
+new :: IO () -> IO TimerManager
 new dieCallback = newWith dieCallback =<< newDefaultBackend
 
-newWith :: IO () -> Backend -> IO EventManager
+newWith :: IO () -> Backend -> IO TimerManager
 newWith dieCallback be = do
   iofds <- newMVar IM.empty
   timeouts <- newIORef id
@@ -196,7 +184,7 @@ newWith dieCallback be = do
                when (st /= Finished) $ do
                  I.delete be
                  closeControl ctrl
-  let mgr = EventManager { emBackend = be
+  let mgr = TimerManager { emBackend = be
                          , emFds = iofds
                          , emTimeouts = timeouts
                          , emState = state
@@ -209,16 +197,16 @@ newWith dieCallback be = do
   return mgr
 
 -- | Asynchronously shuts down the event manager, if running.
-shutdown :: EventManager -> IO ()
+shutdown :: TimerManager -> IO ()
 shutdown mgr = do
   state <- atomicModifyIORef (emState mgr) $ \s -> (Dying, s)
   when (state == Running) $ sendDie (emControl mgr)
 
-finished :: EventManager -> IO Bool
+finished :: TimerManager -> IO Bool
 finished mgr = (== Finished) `liftM` readIORef (emState mgr)
 
-cleanup :: EventManager -> IO ()
-cleanup EventManager{..} = do
+cleanup :: TimerManager -> IO ()
+cleanup TimerManager{..} = do
   writeIORef emState Finished
   I.delete emBackend
   closeControl emControl
@@ -229,10 +217,10 @@ cleanup EventManager{..} = do
 -- | Start handling events.  This function loops until told to stop,
 -- using 'shutdown'.
 --
--- /Note/: This loop can only be run once per 'EventManager', as it
+-- /Note/: This loop can only be run once per 'TimerManager', as it
 -- closes all of its control resources when it finishes.
-loop :: EventManager -> IO ()
-loop mgr@EventManager{..} = do
+loop :: TimerManager -> IO ()
+loop mgr@TimerManager{..} = do
   state <- atomicModifyIORef emState $ \s -> case s of
     Created -> (Running, s)
     _       -> (s, s)
@@ -246,8 +234,8 @@ loop mgr@EventManager{..} = do
   go q = do (running, q') <- step mgr q
             when running $ go q'
 
-step :: EventManager -> TimeoutQueue -> IO (Bool, TimeoutQueue)
-step mgr@EventManager{..} tq = do
+step :: TimerManager -> TimeoutQueue -> IO (Bool, TimeoutQueue)
+step mgr@TimerManager{..} tq = do
   (timeout, q') <- mkTimeout tq
   _ <- I.poll emBackend timeout (onFdEvent mgr)
   state <- readIORef emState
@@ -276,9 +264,9 @@ step mgr@EventManager{..} tq = do
 -- | Register interest in the given events, without waking the event
 -- manager thread.  The 'Bool' return value indicates whether the
 -- event manager ought to be woken.
-registerFd_ :: EventManager -> IOCallback -> Fd -> Event
+registerFd_ :: TimerManager -> IOCallback -> Fd -> Event
             -> IO (FdKey, Bool)
-registerFd_ EventManager{..} cb fd evs = do
+registerFd_ TimerManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   modifyMVar emFds $ \oldMap -> do
     let fd'  = fromIntegral fd
@@ -296,7 +284,7 @@ registerFd_ EventManager{..} cb fd evs = do
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
+registerFd :: TimerManager -> IOCallback -> Fd -> Event -> IO FdKey
 registerFd mgr cb fd evs = do
   (r, wake) <- registerFd_ mgr cb fd evs
   when wake $ wakeManager mgr
@@ -304,7 +292,7 @@ registerFd mgr cb fd evs = do
 {-# INLINE registerFd #-}
 
 -- | Wake up the event manager.
-wakeManager :: EventManager -> IO ()
+wakeManager :: TimerManager -> IO ()
 wakeManager mgr = sendWakeup (emControl mgr)
 
 eventsOf :: [FdData] -> Event
@@ -320,8 +308,8 @@ pairEvents prev m fd = let l = eventsOf prev
 -- | Drop a previous file descriptor registration, without waking the
 -- event manager thread.  The return value indicates whether the event
 -- manager ought to be woken.
-unregisterFd_ :: EventManager -> FdKey -> IO Bool
-unregisterFd_ EventManager{..} (FdKey fd u) =
+unregisterFd_ :: TimerManager -> FdKey -> IO Bool
+unregisterFd_ TimerManager{..} (FdKey fd u) =
   modifyMVar emFds $ \oldMap -> do
     let dropReg cbs = case filter ((/= u) . keyUnique . fdKey) cbs of
                           []   -> Nothing
@@ -336,13 +324,13 @@ unregisterFd_ EventManager{..} (FdKey fd u) =
     return (newMap, modify)
 
 -- | Drop a previous file descriptor registration.
-unregisterFd :: EventManager -> FdKey -> IO ()
+unregisterFd :: TimerManager -> FdKey -> IO ()
 unregisterFd mgr reg = do
   wake <- unregisterFd_ mgr reg
   when wake $ wakeManager mgr
 
 -- | Close a file descriptor in a race-safe way.
-closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
+closeFd :: TimerManager -> (Fd -> IO ()) -> Fd -> IO ()
 closeFd mgr close fd = do
   fds <- modifyMVar (emFds mgr) $ \oldMap -> do
     close fd
@@ -360,7 +348,7 @@ closeFd mgr close fd = do
 -- returned 'TimeoutKey' can be used to later unregister or update the
 -- timeout.  The timeout is automatically unregistered after the given
 -- time has passed.
-registerTimeout :: EventManager -> Int -> TimeoutCallback -> IO TimeoutKey
+registerTimeout :: TimerManager -> Int -> TimeoutCallback -> IO TimeoutKey
 registerTimeout mgr us cb = do
   !key <- newUnique (emUniqueSource mgr)
   if us <= 0 then cb
@@ -379,7 +367,7 @@ registerTimeout mgr us cb = do
   return $ TK key
 
 -- | Unregister an active timeout.
-unregisterTimeout :: EventManager -> TimeoutKey -> IO ()
+unregisterTimeout :: TimerManager -> TimeoutKey -> IO ()
 unregisterTimeout mgr (TK key) = do
   atomicModifyIORef (emTimeouts mgr) $ \f ->
       let f' = (Q.delete key) . f in (f', ())
@@ -387,7 +375,7 @@ unregisterTimeout mgr (TK key) = do
 
 -- | Update an active timeout to fire in the given number of
 -- microseconds.
-updateTimeout :: EventManager -> TimeoutKey -> Int -> IO ()
+updateTimeout :: TimerManager -> TimeoutKey -> Int -> IO ()
 updateTimeout mgr (TK key) us = do
   now <- getCurrentTime
   let expTime = fromIntegral us / 1000000.0 + now
@@ -400,7 +388,7 @@ updateTimeout mgr (TK key) us = do
 -- Utilities
 
 -- | Call the callbacks corresponding to the given file descriptor.
-onFdEvent :: EventManager -> Fd -> Event -> IO ()
+onFdEvent :: TimerManager -> Fd -> Event -> IO ()
 onFdEvent mgr fd evs = do
   fds <- readMVar (emFds mgr)
   case IM.lookup (fromIntegral fd) fds of

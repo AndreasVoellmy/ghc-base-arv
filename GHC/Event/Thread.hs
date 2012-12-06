@@ -11,6 +11,7 @@ module GHC.Event.Thread (
   , threadWaitReadSTM
   , threadWaitWriteSTM
   , closeFdWith
+  , getTimerManager
   , threadDelay
   , registerDelay
   ) where
@@ -54,7 +55,7 @@ getSystemEventManager = do
   Just (_,mgr) <- readIOArray eventManagerRef cap
   return mgr
 
-getTimerManager :: IO (Maybe NE.EventManager)
+getTimerManager :: IO (Maybe NE.TimerManager)
 getTimerManager = readIORef timerManagerRef
 
 eventManagerRef :: IOArray Int (Maybe (ThreadId,SM.EventManager))
@@ -69,7 +70,7 @@ eventManagerLock = unsafePerformIO $ do
   sharedCAF em getOrSetSystemEventThreadEventManagerLock
 {-# NOINLINE eventManagerLock #-}
 
-timerManagerRef :: IORef (Maybe NE.EventManager)
+timerManagerRef :: IORef (Maybe NE.TimerManager)
 timerManagerRef = unsafePerformIO $ do
   em <- newIORef Nothing
   sharedCAF em getOrSetSystemEventThreadEventManagerStore
@@ -136,7 +137,7 @@ ensureIOManagerIsRunning | not threaded = return ()
     modifyMVar_ eventManagerLock $ \() ->
       forM_ [0,1..numCapabilities-1] ensureIOManagerIsRunning1 
 
-threadWaitSTM :: NE.Event -> Fd -> IO (STM (), IO ())
+threadWaitSTM :: SM.Event -> Fd -> IO (STM (), IO ())
 threadWaitSTM evt fd = mask_ $ do
   m <- newTVarIO Nothing
   !mgr <- getSystemEventManager
@@ -160,7 +161,7 @@ threadWaitWriteSTM :: Fd -> IO (STM (), IO ())
 threadWaitWriteSTM = threadWaitSTM SM.evtWrite
 {-# INLINE threadWaitWriteSTM #-}
 
-threadWait :: NE.Event -> Fd -> IO ()
+threadWait :: SM.Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do
   m <- newEmptyMVar
   !mgr <- getSystemEventManager
