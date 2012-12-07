@@ -11,10 +11,12 @@
 module GHC.Event
     ( -- * Types
       EventManager
-
+    , TimerManager
+      
       -- * Creation
     , getSystemEventManager
-
+    , getTimerManager
+      
       -- * Registering interest in I/O events
     , Event
     , evtRead
@@ -27,8 +29,6 @@ module GHC.Event
     , closeFd
 
       -- * Registering interest in timeout events
-    , TimerManager
-    , getTimerManager
     , TimeoutCallback
     , TimeoutKey
     , registerTimeout
