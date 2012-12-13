@@ -124,11 +124,11 @@ ensureIOManagerIsRunning1 i = do
         ThreadDied     -> SM.cleanup mgr >> create i
         _other         -> return ()
   where
-    create i = do
+    create n = do
       mgr <- SM.new
-      t   <- forkOn i (SM.loop mgr)
+      t   <- forkOn n (SM.loop mgr)
       labelThread t "IOManager"
-      writeIOArray eventManagerRef i (Just (t,mgr))
+      writeIOArray eventManagerRef n (Just (t,mgr))
 
 ensureIOManagerIsRunning :: IO ()
 ensureIOManagerIsRunning | not threaded = return ()

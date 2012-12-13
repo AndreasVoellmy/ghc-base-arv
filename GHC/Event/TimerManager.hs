@@ -38,23 +38,20 @@ module GHC.Event.TimerManager
 ------------------------------------------------------------------------
 -- Imports
 
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 import Control.Exception (finally)
-import Control.Monad ((=<<), forM_, liftM, sequence_, when)
+import Control.Monad ((=<<), liftM, sequence_, when)
 import Data.IORef (IORef, atomicModifyIORef, mkWeakIORef, newIORef, readIORef,
                    writeIORef)
 import Data.Maybe (Maybe(..))
-import Data.Monoid (mappend, mconcat, mempty)
+import Data.Monoid (mempty)
 import GHC.Base
 import GHC.Conc.Signal (runHandlers)
-import GHC.List (filter)
 import GHC.Num (Num(..))
 import GHC.Real ((/), fromIntegral )
 import GHC.Show (Show(..))
 import GHC.Event.Clock (getCurrentTime)
 import GHC.Event.Control
-import GHC.Event.Internal (Backend, Event, evtClose, evtRead, evtWrite,
-                           Timeout(..))
+import GHC.Event.Internal (Backend, Event, evtRead, Timeout(..))
 import GHC.Event.Unique (Unique, UniqueSource, newSource, newUnique)
 import System.Posix.Types (Fd)
 
