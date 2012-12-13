@@ -159,11 +159,11 @@ insert k p v q = case q of
         EQ -> singleton k  p  v
         GT -> singleton k' p' v' `play` singleton k  p  v
     Winner e (RLoser _ e' tl m tr) m'
-        | k <= m    -> insert k p v (Winner e tl m) `play` (Winner e' tr m')
-        | otherwise -> (Winner e tl m) `play` insert k p v (Winner e' tr m')
+        | k <= m    -> insert k p v (Winner e tl m) `play` Winner e' tr m'
+        | otherwise -> Winner e tl m `play` insert k p v (Winner e' tr m')
     Winner e (LLoser _ e' tl m tr) m'
-        | k <= m    -> insert k p v (Winner e' tl m) `play` (Winner e tr m')
-        | otherwise -> (Winner e' tl m) `play` insert k p v (Winner e tr m')
+        | k <= m    -> insert k p v (Winner e' tl m) `play` Winner e tr m'
+        | otherwise -> Winner e' tl m `play` insert k p v (Winner e tr m')
 
 ------------------------------------------------------------------------
 -- Delete/Update
@@ -178,11 +178,11 @@ delete k q = case q of
         | k == k'   -> empty
         | otherwise -> singleton k' p v
     Winner e (RLoser _ e' tl m tr) m'
-        | k <= m    -> delete k (Winner e tl m) `play` (Winner e' tr m')
-        | otherwise -> (Winner e tl m) `play` delete k (Winner e' tr m')
+        | k <= m    -> delete k (Winner e tl m) `play` Winner e' tr m'
+        | otherwise -> Winner e tl m `play` delete k (Winner e' tr m')
     Winner e (LLoser _ e' tl m tr) m'
-        | k <= m    -> delete k (Winner e' tl m) `play` (Winner e tr m')
-        | otherwise -> (Winner e' tl m) `play` delete k (Winner e tr m')
+        | k <= m    -> delete k (Winner e' tl m) `play` Winner e tr m'
+        | otherwise -> Winner e' tl m `play` delete k (Winner e tr m')
 
 -- | /O(log n)/ Update a priority at a specific key with the result
 -- of the provided function.  When the key is not a member of the
@@ -196,11 +196,11 @@ adjust f k q0 =  go q0
             | k == k'   -> singleton k' (f p) v
             | otherwise -> singleton k' p v
         Winner e (RLoser _ e' tl m tr) m'
-            | k <= m    -> go (Winner e tl m) `unsafePlay` (Winner e' tr m')
-            | otherwise -> (Winner e tl m) `unsafePlay` go (Winner e' tr m')
+            | k <= m    -> go (Winner e tl m) `unsafePlay` Winner e' tr m'
+            | otherwise -> Winner e tl m `unsafePlay` go (Winner e' tr m')
         Winner e (LLoser _ e' tl m tr) m'
-            | k <= m    -> go (Winner e' tl m) `unsafePlay` (Winner e tr m')
-            | otherwise -> (Winner e' tl m) `unsafePlay` go (Winner e tr m')
+            | k <= m    -> go (Winner e' tl m) `unsafePlay` Winner e tr m'
+            | otherwise -> Winner e' tl m `unsafePlay` go (Winner e tr m')
 {-# INLINE adjust #-}
 
 ------------------------------------------------------------------------
@@ -468,13 +468,13 @@ moduleError fun msg = error ("GHC.Event.PSQ." ++ fun ++ ':' : ' ' : msg)
 newtype Sequ a = Sequ ([a] -> [a])
 
 emptySequ :: Sequ a
-emptySequ = Sequ (\as -> as)
+emptySequ = Sequ id
 
 singleSequ :: a -> Sequ a
 singleSequ a = Sequ (\as -> a : as)
 
 (<>) :: Sequ a -> Sequ a -> Sequ a
-Sequ x1 <> Sequ x2 = Sequ (\as -> x1 (x2 as))
+Sequ x1 <> Sequ x2 = Sequ (x1 . x2)
 infixr 5 <>
 
 seqToList :: Sequ a -> [a]

@@ -3,7 +3,6 @@
            , ForeignFunctionInterface
            , GeneralizedNewtypeDeriving
            , NoImplicitPrelude
-           , RecordWildCards
            , BangPatterns
   #-}
 

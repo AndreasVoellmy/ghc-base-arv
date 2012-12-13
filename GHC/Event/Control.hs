@@ -29,19 +29,18 @@ module GHC.Event.Control
 #include "EventConfig.h"
 
 import Control.Monad (when)
-import Foreign.ForeignPtr (ForeignPtr)
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.Types (CInt(..), CSize(..))
+import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
+import Foreign.Marshal (alloca, allocaBytes)
+import Foreign.Marshal.Array (allocaArray)
+import Foreign.Ptr (castPtr)
+import Foreign.Storable (peek, peekElemOff, poke)
 import GHC.Base
 import GHC.Conc.Signal (Signal)
 import GHC.Real (fromIntegral)
 import GHC.Show (Show)
 import GHC.Word (Word8)
-import Foreign.C.Error (throwErrnoIfMinus1_)
-import Foreign.C.Types (CInt(..), CSize(..))
-import Foreign.ForeignPtr (mallocForeignPtrBytes, withForeignPtr)
-import Foreign.Marshal (alloca, allocaBytes)
-import Foreign.Marshal.Array (allocaArray)
-import Foreign.Ptr (castPtr)
-import Foreign.Storable (peek, peekElemOff, poke)
 import System.Posix.Internals (c_close, c_pipe, c_read, c_write,
                                setCloseOnExec, setNonBlockingFD)
 import System.Posix.Types (Fd)

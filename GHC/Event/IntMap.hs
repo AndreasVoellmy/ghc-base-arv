@@ -88,17 +88,17 @@ import Data.Word
 type Nat = Word
 
 natFromInt :: Key -> Nat
-natFromInt i = fromIntegral i
+natFromInt = fromIntegral
 
 intFromNat :: Nat -> Key
-intFromNat w = fromIntegral w
+intFromNat = fromIntegral
 
 shiftRL :: Nat -> Key -> Nat
 #if __GLASGOW_HASKELL__
 -- GHC: use unboxing to get @shiftRL@ inlined.
 shiftRL (W# x) (I# i) = W# (shiftRL# x i)
 #else
-shiftRL x i = shiftR x i
+shiftRL = shiftR
 #endif
 
 ------------------------------------------------------------------------
@@ -131,7 +131,7 @@ lookupN k t
         | zeroN k (natFromInt m) -> lookupN k l
         | otherwise              -> lookupN k r
       Tip kx x
-        | (k == natFromInt kx)  -> Just x
+        | k == natFromInt kx    -> Just x
         | otherwise             -> Nothing
       Nil -> Nothing
 
@@ -209,7 +209,7 @@ updateWith f k t = case t of
         | otherwise     -> let (found, r') = updateWith f k r
                            in (found, bin p m l r')
     Tip ky y
-        | k == ky       -> case (f y) of
+        | k == ky       -> case f y of
                                Just y' -> (Just y, Tip ky y')
                                Nothing -> (Just y, Nil)
         | otherwise     -> (Nothing, t)
@@ -224,8 +224,7 @@ updateWith f k t = case t of
 -- > foldWithKey f "Map: " (fromList [(5,"a"), (3,"b")]) == "Map: (5:a)(3:b)"
 
 foldWithKey :: (Key -> a -> b -> b) -> b -> IntMap a -> b
-foldWithKey f z t
-  = foldr f z t
+foldWithKey = foldr
 
 -- | /O(n)/. Convert the map to a list of key\/value pairs.
 --
@@ -269,7 +268,7 @@ instance Eq a => Eq (IntMap a) where
 
 equal :: Eq a => IntMap a -> IntMap a -> Bool
 equal (Bin p1 m1 l1 r1) (Bin p2 m2 l2 r2)
-    = (m1 == m2) && (p1 == p2) && (equal l1 l2) && (equal r1 r2)
+    = (m1 == m2) && (p1 == p2) && equal l1 l2 && equal r1 r2
 equal (Tip kx x) (Tip ky y)
     = (kx == ky) && (x==y)
 equal Nil Nil = True
@@ -277,7 +276,7 @@ equal _   _   = False
 
 nequal :: Eq a => IntMap a -> IntMap a -> Bool
 nequal (Bin p1 m1 l1 r1) (Bin p2 m2 l2 r2)
-    = (m1 /= m2) || (p1 /= p2) || (nequal l1 l2) || (nequal r1 r2)
+    = (m1 /= m2) || (p1 /= p2) || nequal l1 l2 || nequal r1 r2
 nequal (Tip kx x) (Tip ky y)
     = (kx /= ky) || (x/=y)
 nequal Nil Nil = False
@@ -308,16 +307,16 @@ bin p m l r   = Bin p m l r
 -- Endian independent bit twiddling
 
 zero :: Key -> Mask -> Bool
-zero i m = (natFromInt i) .&. (natFromInt m) == 0
+zero i m = natFromInt i .&. natFromInt m == 0
 
 nomatch :: Key -> Prefix -> Mask -> Bool
-nomatch i p m = (mask i m) /= p
+nomatch i p m = mask i m /= p
 
 mask :: Key -> Mask -> Prefix
 mask i m = maskW (natFromInt i) (natFromInt m)
 
 zeroN :: Nat -> Nat -> Bool
-zeroN i m = (i .&. m) == 0
+zeroN i m = i .&. m == 0
 
 ------------------------------------------------------------------------
 -- Big endian operations
@@ -368,11 +367,11 @@ than a single CISC instruction (BSR)!
 -- FXT library.
 highestBitMask :: Nat -> Nat
 highestBitMask x0
-  = case (x0 .|. shiftRL x0 1) of
-     x1 -> case (x1 .|. shiftRL x1 2) of
-      x2 -> case (x2 .|. shiftRL x2 4) of
-       x3 -> case (x3 .|. shiftRL x3 8) of
-        x4 -> case (x4 .|. shiftRL x4 16) of
-         x5 -> case (x5 .|. shiftRL x5 32) of   -- for 64 bit platforms
-          x6 -> (x6 `xor` (shiftRL x6 1))
+  = case x0 .|. shiftRL x0 1 of
+     x1 -> case x1 .|. shiftRL x1 2 of
+      x2 -> case x2 .|. shiftRL x2 4 of
+       x3 -> case x3 .|. shiftRL x3 8 of
+        x4 -> case x4 .|. shiftRL x4 16 of
+         x5 -> case x5 .|. shiftRL x5 32 of   -- for 64 bit platforms
+          x6 -> x6 `xor` shiftRL x6 1
 

@@ -17,24 +17,24 @@ module GHC.Event.Thread (
   ) where
 
 
-import GHC.Base
+import Control.Exception
+import Control.Monad (forM, forM_, zipWithM_, when, void)
+import Data.IORef
 import Data.Maybe (Maybe(..))
 import Data.Tuple (snd)
-import System.Posix.Types (Fd)
-import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
-import qualified GHC.Event.Internal as E
-import qualified GHC.Event.TimerManager as NE
+import Foreign.C.Error
+import Foreign.Ptr (Ptr)
+import GHC.Base
+import GHC.Conc.Sync
 import qualified GHC.Event.CapManager as SM
 import qualified GHC.Event.IntMap as IM
-import Foreign.C.Error
-import Control.Exception
-import Data.IORef
-import GHC.Conc.Sync
-import System.IO.Unsafe
-import Control.Monad (forM, forM_, zipWithM_, when)
-import GHC.Num
-import Foreign.Ptr (Ptr)
+import qualified GHC.Event.Internal as E
+import qualified GHC.Event.TimerManager as NE
 import GHC.IOArray
+import GHC.MVar (MVar, newEmptyMVar, newMVar, putMVar, takeMVar)
+import GHC.Num
+import System.IO.Unsafe
+import System.Posix.Types (Fd)
 
 shutdownManagers :: IO ()
 shutdownManagers =
@@ -150,7 +150,7 @@ threadWaitSTM evt fd = mask_ $ do
           Just ev ->
             when (ev `E.eventIs` E.evtClose)
                  (throwSTM $ errnoToIOError "threadWait" eBADF Nothing Nothing)
-  let closeAction = SM.unregisterFd_ mgr reg >> return ()
+  let closeAction = void $ SM.unregisterFd_ mgr reg
   return (waitAction, closeAction)
 
 threadWaitReadSTM :: Fd -> IO (STM (), IO ())
@@ -167,9 +167,8 @@ threadWait evt fd = mask_ $ do
   !mgr <- getSystemEventManager
   reg <- SM.registerFd mgr (\_ ev -> putMVar m ev) fd evt
   evt' <- takeMVar m `onException` SM.unregisterFd_ mgr reg
-  if evt' `E.eventIs` E.evtClose
-    then ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
-    else return ()
+  when (evt' `E.eventIs` E.evtClose) $
+    ioError $ errnoToIOError "threadWait" eBADF Nothing Nothing
 
 threadWaitRead :: Fd -> IO ()
 threadWaitRead = threadWait SM.evtRead
