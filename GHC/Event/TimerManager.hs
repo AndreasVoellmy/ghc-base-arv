@@ -174,7 +174,7 @@ newWith dieCallback be = do
                          , emDieCallback = dieCallback
                          }
   I.modifyFd be (controlReadFd ctrl) mempty evtRead
-  I.modifyFd be (wakeupReadFd ctrl) mempty evtRead  
+  I.modifyFd be (wakeupReadFd ctrl) mempty evtRead
   return mgr
 
 -- | Asynchronously shuts down the event manager, if running.

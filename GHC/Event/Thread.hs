@@ -135,7 +135,7 @@ ensureIOManagerIsRunning | not threaded = return ()
                          | otherwise    = do
     ensureTimerManagerIsRunning
     modifyMVar_ eventManagerLock $ \() ->
-      forM_ [0,1..numCapabilities-1] ensureIOManagerIsRunning1 
+      forM_ [0,1..numCapabilities-1] ensureIOManagerIsRunning1
 
 threadWaitSTM :: SM.Event -> Fd -> IO (STM (), IO ())
 threadWaitSTM evt fd = mask_ $ do
