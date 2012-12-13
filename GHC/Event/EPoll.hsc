@@ -40,7 +40,7 @@ available = False
 
 #include <sys/epoll.h>
 
-import Control.Monad (when)
+import Control.Monad (when, unless, void)
 import Data.Bits (Bits, (.|.), (.&.))
 import Data.Monoid (Monoid(..))
 import Data.Word (Word32)
@@ -81,9 +81,7 @@ new = do
   return be
 
 delete :: EPoll -> IO ()
-delete be = do
-  _ <- c_close . fromEPollFd . epollFd $ be
-  return ()
+delete be = void $ c_close . fromEPollFd . epollFd $ be
 
 -- | Change the set of events we are interested in for a given file
 -- descriptor.
@@ -99,13 +97,12 @@ modifyFdOnce ep fd evt =
   do let !ev = fromEvent evt .|. epollOneShot
      res <- with (Event ev fd) $
             epollControl_ (epollFd ep) controlOpModify fd
-     if res == 0
-       then return ()
-       else do err <- getErrno
-               if err == eNOENT
-                 then with (Event ev fd) $
-                      epollControl (epollFd ep) controlOpAdd fd
-                 else throwErrno "modifyFdOnce"
+     unless (res == 0) $ do
+         err <- getErrno
+         if err == eNOENT then
+             with (Event ev fd) $ epollControl (epollFd ep) controlOpAdd fd
+           else
+             throwErrno "modifyFdOnce"
 
 -- | Select a set of file descriptors which are ready for I/O
 -- operations and call @f@ for all ready file descriptors, passing the
