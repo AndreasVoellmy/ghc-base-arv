@@ -3,7 +3,6 @@
            , ForeignFunctionInterface
            , GeneralizedNewtypeDeriving
            , NoImplicitPrelude
-           , RecordWildCards
            , BangPatterns
   #-}
 
@@ -97,10 +96,10 @@ modifyFd kq fd oevt nevt
 
 modifyFdOnce :: KQueue -> Fd -> E.Event -> IO ()
 modifyFdOnce kq fd evt = do
-    let !ev = event fd (toFilter evt) flags noteEOF
+    let !ev = event fd (toFilter evt) flag noteEOF
     kqueueControl (kqueueFd kq) ev
   where
-    flags = flagAdd .|. flagOneshot
+    flag = flagAdd .|. flagOneshot
 
 toFilter :: E.Event -> Filter
 toFilter evt

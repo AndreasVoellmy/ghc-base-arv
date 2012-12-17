@@ -347,8 +347,8 @@ onFdEvent mgr@EventManager{..} fd evs =
 -- | @registerFd mgr cb fd evs@ registers interest in the events @evs@
 -- on the file descriptor @fd@.  @cb@ is called for each event that
 -- occurs.  Returns a cookie that can be handed to 'unregisterFd'.
-registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO (FdKey, Bool)
-registerFd EventManager{..} cb fd evs = do
+registerFd :: EventManager -> IOCallback -> Fd -> Event -> IO FdKey
+registerFd mgr@EventManager{..} cb fd evs = do
   u <- newUnique emUniqueSource
   let !reg  = FdKey fd u
       !fd'  = fromIntegral fd
