@@ -30,7 +30,7 @@ module GHC.Event.Control
 
 import Control.Monad (when)
 import Foreign.C.Error (throwErrnoIfMinus1_)
-import Foreign.C.Types (CInt(..), CSize(..))
+import Foreign.C.Types (CInt(..), CSize(..), CULong(..))
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal (alloca, allocaBytes)
 import Foreign.Marshal.Array (allocaArray)
@@ -174,10 +174,9 @@ readControlMessage ctrl fd
 
 sendWakeup :: Control -> IO ()
 #if defined(HAVE_EVENTFD)
-sendWakeup c = alloca $ \p -> do
-  poke p (1 :: Word64)
+sendWakeup c = 
   throwErrnoIfMinus1_ "sendWakeup" $
-    c_write (fromIntegral (controlEventFd c)) (castPtr p) 8
+  c_eventfd_write (fromIntegral (controlEventFd c)) 1
 #else
 sendWakeup c = do
   n <- sendMessage (wakeupWriteFd c) CMsgWakeup
@@ -204,6 +203,9 @@ sendMessage fd msg = alloca $ \p -> do
 #if defined(HAVE_EVENTFD)
 foreign import ccall unsafe "sys/eventfd.h eventfd"
    c_eventfd :: CInt -> CInt -> IO CInt
+
+foreign import ccall unsafe "sys/eventfd.h eventfd_write"
+   c_eventfd_write :: CInt -> CULong -> IO CInt
 #endif
 
 -- Used to tell the RTS how it can send messages to the I/O manager.

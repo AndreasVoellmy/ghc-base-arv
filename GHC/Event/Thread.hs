@@ -60,7 +60,7 @@ getTimerManager = readIORef timerManagerRef
 
 eventManagerRef :: IOArray Int (Maybe (ThreadId,SM.EventManager))
 eventManagerRef = unsafePerformIO $ do
-  mgrs <- newIOArray (0, numCapabilities) Nothing
+  mgrs <- newIOArray (0, numCapabilities - 1) Nothing
   sharedCAF mgrs getOrSetSystemEventThreadIOManagerArray
 {-# NOINLINE eventManagerRef #-}
 

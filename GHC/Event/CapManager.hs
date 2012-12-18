@@ -13,7 +13,7 @@ module GHC.Event.CapManager
     , new
     , newWith
     , newDefaultBackend
-
+      
       -- * Running
     , finished
     , loop
@@ -341,6 +341,7 @@ onFdEvent mgr@EventManager{..} fd evs =
           | evs `I.eventIs` evs' = aux cbs' (fdd:fdds) saved
           | otherwise            = aux cbs' fdds (fdd:saved)
 #else
+
 ------------------------------------------------------------------------
 -- Registering interest in I/O events
 
