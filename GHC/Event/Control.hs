@@ -30,7 +30,7 @@ module GHC.Event.Control
 
 import Control.Monad (when)
 import Foreign.C.Error (throwErrnoIfMinus1_)
-import Foreign.C.Types (CInt(..), CSize(..), CULong(..))
+import Foreign.C.Types (CInt(..), CSize(..))
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal (alloca, allocaBytes)
 import Foreign.Marshal.Array (allocaArray)
@@ -48,6 +48,7 @@ import System.Posix.Types (Fd)
 #if defined(HAVE_EVENTFD)
 import Data.Word (Word64)
 import Foreign.C.Error (throwErrnoIfMinus1)
+import Foreign.C.Types (CULong(..))
 #else
 import Foreign.C.Error (eAGAIN, eWOULDBLOCK, getErrno, throwErrno)
 #endif
