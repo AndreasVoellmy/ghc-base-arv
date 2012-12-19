@@ -58,6 +58,12 @@ import System.Posix.Types (Fd)
 import qualified GHC.Event.Internal as I
 import qualified GHC.Event.PSQ as Q
 
+{-
+Since TimeManager uses timeout functionality, select() or poll() is
+enough. Also, if we use *epoll* in TimeManger, CapManager hangs
+under heavy load. So, we use poll() here.
+-}
+
 #if defined(HAVE_POLL)
 import qualified GHC.Event.Poll   as Poll
 #else
