@@ -46,7 +46,6 @@ import System.Posix.Internals (c_close, c_pipe, c_read, c_write,
 import System.Posix.Types (Fd)
 
 #if defined(HAVE_EVENTFD)
-import Data.Word (Word64)
 import Foreign.C.Error (throwErrnoIfMinus1)
 import Foreign.C.Types (CULong(..))
 #else
