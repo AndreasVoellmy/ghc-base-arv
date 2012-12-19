@@ -30,7 +30,7 @@ module GHC.Event.Control
 
 import Control.Monad (when)
 import Foreign.C.Error (throwErrnoIfMinus1_)
-import Foreign.C.Types (CInt(..), CSize(..), CULong(..))
+import Foreign.C.Types (CInt(..), CSize(..))
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal (alloca, allocaBytes)
 import Foreign.Marshal.Array (allocaArray)
@@ -46,8 +46,8 @@ import System.Posix.Internals (c_close, c_pipe, c_read, c_write,
 import System.Posix.Types (Fd)
 
 #if defined(HAVE_EVENTFD)
-import Data.Word (Word64)
 import Foreign.C.Error (throwErrnoIfMinus1)
+import Foreign.C.Types (CULong(..))
 #else
 import Foreign.C.Error (eAGAIN, eWOULDBLOCK, getErrno, throwErrno)
 #endif
@@ -174,7 +174,7 @@ readControlMessage ctrl fd
 
 sendWakeup :: Control -> IO ()
 #if defined(HAVE_EVENTFD)
-sendWakeup c = 
+sendWakeup c =
   throwErrnoIfMinus1_ "sendWakeup" $
   c_eventfd_write (fromIntegral (controlEventFd c)) 1
 #else

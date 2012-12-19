@@ -13,7 +13,7 @@ module GHC.Event.CapManager
     , new
     , newWith
     , newDefaultBackend
-      
+
       -- * Running
     , finished
     , loop

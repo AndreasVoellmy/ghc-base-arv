@@ -176,12 +176,11 @@ newtype EventType = EventType {
     } deriving (Show, Eq, Num, Bits)
 
 #{enum EventType, EventType
- , epollIn  = EPOLLIN
- , epollOut = EPOLLOUT
- , epollErr = EPOLLERR
- , epollHup = EPOLLHUP
+ , epollIn      = EPOLLIN
+ , epollOut     = EPOLLOUT
+ , epollErr     = EPOLLERR
+ , epollHup     = EPOLLHUP
  , epollOneShot = EPOLLONESHOT
- , epollET      = EPOLLET
  }
 
 -- | Create a new epoll context, returning a file descriptor associated with the context.
