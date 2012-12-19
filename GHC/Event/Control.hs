@@ -175,7 +175,7 @@ readControlMessage ctrl fd
 
 sendWakeup :: Control -> IO ()
 #if defined(HAVE_EVENTFD)
-sendWakeup c = 
+sendWakeup c =
   throwErrnoIfMinus1_ "sendWakeup" $
   c_eventfd_write (fromIntegral (controlEventFd c)) 1
 #else
