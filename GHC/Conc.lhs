@@ -97,6 +97,7 @@ module GHC.Conc
 #endif
 
         , ensureIOManagerIsRunning
+        , ioManagerCapabilitiesChanged
 
 #ifdef mingw32_HOST_OS
         , ConsoleEvent(..)
