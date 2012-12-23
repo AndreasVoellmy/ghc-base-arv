@@ -1,6 +1,5 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE BangPatterns, ForeignFunctionInterface, NoImplicitPrelude #-}
-
 module GHC.Event.Thread
     ( getSystemEventManager
     , getSystemTimerManager
@@ -16,7 +15,7 @@ module GHC.Event.Thread
     ) where
 
 import Control.Exception (finally)
-import Control.Monad (forM, forM_, zipWithM_)
+import Control.Monad (forM, forM_, zipWithM_, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Tuple (snd)
@@ -39,7 +38,7 @@ import GHC.Event.Clock (initializeTimer)
 import qualified GHC.Event.IntMap as IM
 import qualified GHC.Event.Manager as M
 import qualified GHC.Event.TimerManager as TM
-import GHC.Num ((-))
+import GHC.Num ((-), (+))
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Types (Fd)
 
@@ -182,9 +181,15 @@ eventManager = unsafePerformIO $ do
     sharedCAF em getOrSetSystemEventThreadEventManagerStore
 {-# NOINLINE eventManager #-}
 
+numEnabledEventManagers :: IORef Int
+numEnabledEventManagers = unsafePerformIO $ do
+  newIORef 0
+
 foreign import ccall unsafe "getOrSetSystemEventThreadIOManagerThreadStore"
     getOrSetSystemEventThreadIOManagerThreadStore :: Ptr a -> IO (Ptr a)
 
+-- | The ioManagerLock protects the 'eventManager' value:
+-- Only one thread at a time can start or shutdown event managers.
 {-# NOINLINE ioManagerLock #-}
 ioManagerLock :: MVar ()
 ioManagerLock = unsafePerformIO $ do
@@ -223,12 +228,20 @@ ensureIOManagerIsRunning
       startTimerManagerThread
 
 startIOManagerThreads :: IO ()
-startIOManagerThreads = do
-  eventManagerArray <- readIORef eventManager
-  let (low, high) = boundsIOArray eventManagerArray
-  withMVar ioManagerLock $ \_ ->
-    forM_ [low..high] (startIOManagerThread eventManagerArray)
-  
+startIOManagerThreads = 
+  withMVar ioManagerLock $ \_ -> do
+    eventManagerArray <- readIORef eventManager
+    let (_, high) = boundsIOArray eventManagerArray
+    forM_ [0..high] (startIOManagerThread eventManagerArray)
+    writeIORef numEnabledEventManagers (high+1)
+
+restartPollLoop :: EventManager -> Int -> IO ThreadId
+restartPollLoop mgr i = do
+  M.release mgr
+  !t <- forkOn i $ loop mgr
+  labelThread t "IOManager"
+  return t
+
 startIOManagerThread :: IOArray Int (Maybe (ThreadId, EventManager))
                         -> Int
                         -> IO ()
@@ -240,7 +253,7 @@ startIOManagerThread eventManagerArray i = do
         writeIOArray eventManagerArray i (Just (t,mgr))
   old <- readIOArray eventManagerArray i
   case old of
-    Nothing            -> create
+    Nothing     -> create
     Just (t,em) -> do
       s <- threadStatus t
       case s of
@@ -253,7 +266,11 @@ startIOManagerThread eventManagerArray i = do
           -- See #4449
           M.cleanup em
           create
-        _other         -> return ()
+        _other         -> do
+          -- Another thread is currently servicing the manager loop.
+          -- Tell it to exit and start a new thread to work on the loop.
+          M.release em
+          create
 
 startTimerManagerThread :: IO ()
 startTimerManagerThread = modifyMVar_ timerManagerThreadVar $ \old -> do
@@ -284,15 +301,44 @@ startTimerManagerThread = modifyMVar_ timerManagerThreadVar $ \old -> do
 
 shutdownManagers :: IO ()
 shutdownManagers =
-  do eventManagerArray <- readIORef eventManager
-     let (low, high) = boundsIOArray eventManagerArray
-     forM_ [low..high] $ \i -> do
-       mmgr <- readIOArray eventManagerArray i
-       case mmgr of
-         Nothing -> return ()
-         Just (_,mgr) -> M.shutdown mgr
+  withMVar ioManagerLock $ \_ -> do
+    eventManagerArray <- readIORef eventManager
+    let (_, high) = boundsIOArray eventManagerArray
+    forM_ [0..high] $ \i -> do
+      mmgr <- readIOArray eventManagerArray i
+      case mmgr of
+        Nothing -> return ()
+        Just (_,mgr) -> M.shutdown mgr
 
 foreign import ccall unsafe "rtsSupportsBoundThreads" threaded :: Bool
 
 ioManagerCapabilitiesChanged :: Int -> IO ()
-ioManagerCapabilitiesChanged n = return ()
+ioManagerCapabilitiesChanged new_n_caps = do
+  withMVar ioManagerLock $ \_ -> do
+    numEnabled <- readIORef numEnabledEventManagers
+    writeIORef numEnabledEventManagers new_n_caps
+    eventManagerArray <- readIORef eventManager
+    let (_, high) = boundsIOArray eventManagerArray
+    let old_n_caps = high + 1
+    if new_n_caps > old_n_caps
+      then do new_eventManagerArray <- newIOArray (0, new_n_caps - 1) Nothing
+                                       
+              -- copy the existing values into the new array:
+              forM_ [0..high] $ \i -> do
+                Just (tid,mgr) <- readIOArray eventManagerArray i
+                if i < numEnabled - 1
+                  then writeIOArray new_eventManagerArray i (Just (tid,mgr))
+                  else do tid' <- restartPollLoop mgr i
+                          writeIOArray new_eventManagerArray i (Just (tid',mgr))
+
+              -- create new IO managers for the new caps:
+              forM_ [old_n_caps..new_n_caps-1] $
+                startIOManagerThread eventManagerArray
+
+              -- update the event manager array reference:
+              writeIORef eventManager new_eventManagerArray
+      else when (new_n_caps > numEnabled) $ 
+            forM_ [numEnabled..new_n_caps-1] $ \i -> do
+              Just (_,mgr) <- readIOArray eventManagerArray i
+              tid <- restartPollLoop mgr i
+              writeIOArray eventManagerArray i (Just (tid,mgr))
