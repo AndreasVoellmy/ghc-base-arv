@@ -5,6 +5,7 @@ module GHC.Event.Thread
     ( getSystemEventManager
     , getSystemTimerManager
     , ensureIOManagerIsRunning
+    , ioManagerCapabilitiesChanged
     , threadWaitRead
     , threadWaitWrite
     , threadWaitReadSTM
@@ -285,3 +286,6 @@ shutdownManagers =
          Just (_,mgr) -> M.shutdown mgr
 
 foreign import ccall unsafe "rtsSupportsBoundThreads" threaded :: Bool
+
+ioManagerCapabilitiesChanged :: Int -> IO ()
+ioManagerCapabilitiesChanged n = return ()
