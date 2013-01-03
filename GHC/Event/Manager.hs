@@ -129,6 +129,14 @@ hashFd fd = fromIntegral fd `mod` callbackArraySize
 callbackTableVar :: EventManager -> Fd -> MVar (IM.IntMap [FdData])
 callbackTableVar mgr fd = emFds mgr ! hashFd fd
 {-# INLINE callbackTableVar #-}
+
+haveOneShot :: Bool
+{-# INLINE haveOneShot #-}
+#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
+haveOneShot = True
+#else
+haveOneShot = False
+#endif
 ------------------------------------------------------------------------
 -- Creation
 
@@ -264,15 +272,13 @@ registerFd_ mgr@(EventManager{..}) cb fd evs = do
       reg  = FdKey fd u
       !fdd = FdData reg evs cb
   modifyMVar (callbackTableVar mgr fd) $ \oldMap ->
-#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
-    if emOneShot
+    if haveOneShot && emOneShot
     then case IM.insertWith (++) fd' [fdd] oldMap of
       (Nothing,   n) -> do I.modifyFdOnce emBackend fd evs
                            return (n, (reg, False))
       (Just prev, n) -> do I.modifyFdOnce emBackend fd (combineEvents evs prev)
                            return (n, (reg, False))
     else
-#endif
       let (!newMap, (oldEvs, newEvs)) =
             case IM.insertWith (++) fd' [fdd] oldMap of
               (Nothing,   n) -> (n, (mempty, evs))
