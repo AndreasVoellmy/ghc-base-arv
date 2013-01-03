@@ -15,7 +15,7 @@ module GHC.Event.Thread
     ) where
 
 import Control.Exception (finally)
-import Control.Monad (forM, forM_, zipWithM_, when)
+import Control.Monad (forM, forM_, zipWithM, sequence_, when)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (Maybe(..))
 import Data.Tuple (snd)
@@ -102,10 +102,15 @@ closeFdWith close fd = do
   mask_ $ do
     tables <- forM tableVars (takeMVar.snd)
     close fd
-    zipWithM_
-      (\(mgr,tableVar) table -> M.closeFd mgr table fd >>= putMVar tableVar)
+    invokeCallbackss <- zipWithM
+      (\(mgr,tableVar) table -> do
+          (table', invokeCallbacks) <- M.closeFd mgr table fd
+          putMVar tableVar table'
+          return invokeCallbacks
+      )
       tableVars
       tables
+    sequence_ invokeCallbackss
 
 threadWait :: Event -> Fd -> IO ()
 threadWait evt fd = mask_ $ do

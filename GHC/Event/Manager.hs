@@ -343,7 +343,10 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way. 
 -- It assumes the caller will update the callback tables and that the caller
 -- holds the callback table lock for the fd.
-closeFd :: EventManager -> IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd :: EventManager
+           -> IM.IntMap [FdData]
+           -> Fd
+           -> IO (IM.IntMap [FdData], IO ())
 closeFd mgr oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
     (Nothing,  _)       -> return oldMap
@@ -351,8 +354,10 @@ closeFd mgr oldMap fd = do
       let oldEvs = eventsOf fds
       I.modifyFd (emBackend mgr) fd oldEvs mempty
       when (oldEvs /= mempty) $ wakeManager mgr
-      forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
-      return newMap
+      let invokeCallbacks =
+            forM_ fds $ \(FdData reg ev cb) ->
+            cb reg (ev `mappend` evtClose)
+      return (newMap, invokeCallbacks)
 ------------------------------------------------------------------------
 -- Utilities
 
