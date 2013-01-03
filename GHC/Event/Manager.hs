@@ -39,7 +39,7 @@ module GHC.Event.Manager
     , registerFd
     , unregisterFd_
     , unregisterFd
-    , closeFd_
+    , closeFd
     ) where
 
 #include "EventConfig.h"
@@ -343,8 +343,8 @@ unregisterFd mgr reg = do
 -- | Close a file descriptor in a race-safe way. 
 -- It assumes the caller will update the callback tables and that the caller
 -- holds the callback table lock for the fd.
-closeFd_ :: EventManager -> IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
-closeFd_ mgr oldMap fd = do
+closeFd :: EventManager -> IM.IntMap [FdData] -> Fd -> IO (IM.IntMap [FdData])
+closeFd mgr oldMap fd = do
   case IM.delete (fromIntegral fd) oldMap of
     (Nothing,  _)       -> return oldMap
     (Just fds, !newMap) -> do

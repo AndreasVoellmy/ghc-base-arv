@@ -103,7 +103,7 @@ closeFdWith close fd = do
     tables <- forM tableVars (takeMVar.snd)
     close fd
     zipWithM_
-      (\(mgr,tableVar) table -> M.closeFd_ mgr table fd >>= putMVar tableVar)
+      (\(mgr,tableVar) table -> M.closeFd mgr table fd >>= putMVar tableVar)
       tableVars
       tables
 
