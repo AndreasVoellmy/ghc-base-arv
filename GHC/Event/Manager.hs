@@ -39,7 +39,6 @@ module GHC.Event.Manager
     , registerFd
     , unregisterFd_
     , unregisterFd
-    , closeFd
     , closeFd_
     ) where
 
@@ -340,18 +339,6 @@ unregisterFd :: EventManager -> FdKey -> IO ()
 unregisterFd mgr reg = do
   wake <- unregisterFd_ mgr reg
   when wake $ wakeManager mgr
-
--- | Close a file descriptor in a race-safe way.
-closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
-closeFd mgr close fd = do
-  fds <- modifyMVar (callbackTableVar mgr fd) $ \oldMap -> do
-    close fd
-    case IM.delete (fromIntegral fd) oldMap of
-      (Nothing,  _)       -> return (oldMap, [])
-      (Just fds, !newMap) -> do
-        when (eventsOf fds /= mempty) $ wakeManager mgr
-        return (newMap, fds)
-  forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
 -- | Close a file descriptor in a race-safe way. 
 -- It assumes the caller will update the callback tables and that the caller
