@@ -101,7 +101,6 @@ closeFdWith close fd = do
     return (mgr, M.callbackTableVar mgr fd)
   mask_ $ do
     tables <- forM tableVars (takeMVar.snd)
-    close fd
     invokeCallbackss <- zipWithM
       (\(mgr,tableVar) table -> do
           (table', invokeCallbacks) <- M.closeFd mgr table fd
@@ -110,6 +109,7 @@ closeFdWith close fd = do
       )
       tableVars
       tables
+    close fd
     sequence_ invokeCallbackss
 
 threadWait :: Event -> Fd -> IO ()
