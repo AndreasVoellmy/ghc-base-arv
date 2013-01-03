@@ -395,22 +395,16 @@ onFdEvent mgr fd evs =
     selectCallbacks curmap cbs = aux cbs [] []
       where
         -- nothing to rearm.
-        aux [] _    []          =
-#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
-           return (curmap, cbs)
-#else
-          do I.modifyFd (emBackend mgr) fd (eventsOf cbs) mempty
-             return (curmap, cbs)
-#endif
+        aux [] _    []
+          | haveOneShot = return (curmap, cbs)
+          | otherwise   = do I.modifyFd (emBackend mgr) fd (eventsOf cbs) mempty
+                             return (curmap, cbs)
         -- reinsert and rearm; note that we already have the lock on the
         -- callback table for this fd, and we deleted above, so we know there
         -- is no entry in the table for this fd.
-        aux [] fdds saved@(_:_) = do
-#if defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
-          I.modifyFdOnce (emBackend mgr) fd $ eventsOf saved
-#else
-          I.modifyFd (emBackend mgr) fd (eventsOf cbs) $ eventsOf saved
-#endif
+        aux [] fdds saved@(_:_) = 
+          | haveOneShot = I.modifyFdOnce (emBackend mgr) fd $ eventsOf saved
+          | otherwise   = I.modifyFd (emBackend mgr) fd (eventsOf cbs) $ eventsOf saved
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
 
         -- continue, saving those callbacks that don't match the event
