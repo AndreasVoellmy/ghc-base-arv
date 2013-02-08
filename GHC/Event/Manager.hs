@@ -136,7 +136,7 @@ callbackTableVar mgr fd = emFds mgr ! hashFd fd
 haveOneShot :: Bool
 {-# INLINE haveOneShot #-}
 #if defined(darwin_HOST_OS)
-haveOneShot = False    
+haveOneShot = False
 #elif defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
 haveOneShot = True
 #else
@@ -316,10 +316,19 @@ registerFd mgr cb fd evs = do
   return r
 {-# INLINE registerFd #-}
 
+{-
+    Building GHC with parallel IO manager on Mac freezes when
+    compiling the dph libraries in the phase 2. As workaround, we
+    don't use oneshot and we wake up an IO manager on Mac every time
+    when we register an event.
+
+    For more information, please read:
+        http://hackage.haskell.org/trac/ghc/ticket/7651
+-}
 -- | Wake up the event manager.
 wakeManager :: EventManager -> IO ()
 #if defined(darwin_HOST_OS)
-wakeManager mgr = sendWakeup (emControl mgr)    
+wakeManager mgr = sendWakeup (emControl mgr)
 #elif defined(HAVE_EPOLL) || defined(HAVE_KQUEUE)
 wakeManager _ = return ()
 #else
@@ -377,7 +386,7 @@ closeFd mgr close fd = do
         return (newMap, fds)
   forM_ fds $ \(FdData reg ev cb) -> cb reg (ev `mappend` evtClose)
 
--- | Close a file descriptor in a race-safe way. 
+-- | Close a file descriptor in a race-safe way.
 -- It assumes the caller will update the callback tables and that the caller
 -- holds the callback table lock for the fd. It must hold this lock because
 -- this command executes a backend command on the fd.
@@ -428,7 +437,7 @@ onFdEvent mgr fd evs =
       where
         -- nothing to rearm.
         aux [] _    []          =
-          if haveOneShot 
+          if haveOneShot
           then return (curmap, cbs)
           else do I.modifyFd (emBackend mgr) fd (eventsOf cbs) mempty
                   return (curmap, cbs)
@@ -437,7 +446,7 @@ onFdEvent mgr fd evs =
         -- callback table for this fd, and we deleted above, so we know there
         -- is no entry in the table for this fd.
         aux [] fdds saved@(_:_) = do
-          if haveOneShot 
+          if haveOneShot
             then I.modifyFdOnce (emBackend mgr) fd $ eventsOf saved
             else I.modifyFd (emBackend mgr) fd (eventsOf cbs) $ eventsOf saved
           return (snd $ IM.insertWith (\_ _ -> saved) fd' saved curmap, fdds)
